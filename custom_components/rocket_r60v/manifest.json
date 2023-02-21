@@ -1,0 +1,15 @@
+{
+  "domain": "rocket_r60v",
+  "name": "Rocket R60V",
+  "codeowners": [
+    "@thomasmichon"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://www.home-assistant.io/integrations/rocket_r60v",
+  "iot_class": "local_polling",
+  "requirements": [
+    "rocket-r60v==1.2.1"
+  ],
+  "version": "1.2.1"
+}
