@@ -16,11 +16,11 @@ from .FakeMachine import FakeMachine
 # TODO List the platforms that you want to support.
 # For your initial PR, limit it to 1 platform.
 PLATFORMS: list[Platform] = [
-    Platform.SWITCH,
-    Platform.SENSOR,
-    Platform.SELECT,
-    Platform.TEXT,
-    Platform.WATER_HEATER,
+    Platform.SWITCH#,
+    #Platform.SENSOR,
+    #Platform.SELECT,
+    #Platform.TEXT,
+    #Platform.WATER_HEATER,
 ]
 
 PARALLEL_UPDATES = 1
