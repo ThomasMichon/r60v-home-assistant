@@ -23,8 +23,9 @@ PLATFORMS: list[Platform] = [
     Platform.WATER_HEATER,
 ]
 
-DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
+PARALLEL_UPDATES = 1
 
+DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Rocket R60V from a config entry."""
