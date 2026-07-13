@@ -124,7 +124,7 @@ class RocketR60VServiceBoilerWaterHeaterEntity(WaterHeaterEntity):
         )
 
     def set_temperature(self, **kwargs) -> None:
-        self.data.brew_boiler_temperature = kwargs.get(ATTR_TEMPERATURE)
+        self.data.service_boiler_temperature = kwargs.get(ATTR_TEMPERATURE)
         self.schedule_update_ha_state()
 
     def set_operation_mode(self, operation_mode: str) -> None:

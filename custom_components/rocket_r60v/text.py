@@ -37,7 +37,7 @@ class RocketR60VPressureProfileTextEntity(TextEntity):
         self._attr_available = True
         self._attr_name = f"Pressure Profile {key}"
         self._attr_unique_id = f"rocket_r60v_profile_{key.lower()}"
-        self._attr_pattern = """\d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)?"""
+        self._attr_pattern = r"""\d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)?"""
         self._attr_mode = "text"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, "instance")},
@@ -78,7 +78,7 @@ class RocketR60VAutoOnTimeTextEntity(TextEntity):
         self._attr_available = True
         self._attr_name = "Auto-On Time"
         self._attr_unique_id = "rocket_r60v_profile_auto_on"
-        self._attr_pattern = """\d\d:\d\d"""
+        self._attr_pattern = r"""\d\d:\d\d"""
         self._attr_mode = "text"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, "instance")},
@@ -104,7 +104,7 @@ class RocketR60VAutoOffTimeTextEntity(TextEntity):
         self._attr_available = True
         self._attr_name = "Auto-Off Time"
         self._attr_unique_id = "rocket_r60v_profile_auto_off"
-        self._attr_pattern = """\d\d:\d\d"""
+        self._attr_pattern = r"""\d\d:\d\d"""
         self._attr_mode = "text"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, "instance")},
@@ -116,7 +116,7 @@ class RocketR60VAutoOffTimeTextEntity(TextEntity):
         self._attr_native_value = self.data.auto_off
 
     def set_value(self, value: str) -> None:
-        self.data.auto_on = value
+        self.data.auto_off = value
         self.schedule_update_ha_state()
 
     def update(self) -> None:

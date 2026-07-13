@@ -1,13 +1,20 @@
 {
   "config": {
     "step": {
-      "confirm": {
-        "description": "[%key:common::config_flow::description::confirm_setup%]"
+      "user": {
+        "title": "Rocket R60V",
+        "description": "Enter the machine's control endpoint. Connect directly to the machine's own access point at 192.168.1.1, or, if you run the bundled bridge on a host with a spare Wi-Fi radio, enter the bridge's LAN address instead.",
+        "data": {
+          "host": "Host",
+          "port": "Port"
+        }
       }
     },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]"
+    },
     "abort": {
-      "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]",
-      "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]"
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
     }
   }
 }
