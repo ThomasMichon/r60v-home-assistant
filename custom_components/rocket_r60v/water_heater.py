@@ -10,7 +10,7 @@ from homeassistant.components.water_heater import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.const import ATTR_TEMPERATURE
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
 
@@ -35,6 +35,12 @@ async def async_setup_entry(
 
 
 class RocketR60VBrewBoilerWaterHeaterEntity(WaterHeaterEntity):
+    # The machine stores/returns setpoints in Celsius regardless of its own
+    # display-unit preference; report Celsius and let HA convert for display.
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_min_temp = 80
+    _attr_max_temp = 110
+
     def __init__(self, data: Machine, entry: ConfigEntry) -> None:
         self.data = data[entry.entry_id]
 
@@ -50,15 +56,6 @@ class RocketR60VBrewBoilerWaterHeaterEntity(WaterHeaterEntity):
         )
         self._attr_available = True
         self._attr_name = "Brew Boiler"
-
-        if self.data.temperature_unit == "Fahrenheit":
-            self._attr_temperature_unit = "°F"
-            self._attr_min_temp = 176
-            self._attr_max_temp = 230
-        else:
-            self._attr_temperature_unit = "°C"
-            self._attr_min_temp = 80
-            self._attr_max_temp = 100
 
         self._attr_unique_id = "rocket_r60v_brew_boiler"
 
@@ -77,17 +74,13 @@ class RocketR60VBrewBoilerWaterHeaterEntity(WaterHeaterEntity):
         self._attr_current_temperature = self.data.current_brew_boiler_temperature
         self._attr_target_temperature = self.data.brew_boiler_temperature
 
-        if self.data.temperature_unit == "Fahrenheit":
-            self._attr_temperature_unit = "°F"
-            self._attr_min_temp = 176
-            self._attr_max_temp = 230
-        else:
-            self._attr_temperature_unit = "°C"
-            self._attr_min_temp = 80
-            self._attr_max_temp = 100
-
 
 class RocketR60VServiceBoilerWaterHeaterEntity(WaterHeaterEntity):
+    # Setpoints are Celsius regardless of the machine's display-unit preference.
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_min_temp = 110
+    _attr_max_temp = 126
+
     def __init__(self, data: Machine, entry: ConfigEntry) -> None:
         self.data = data[entry.entry_id]
 
@@ -107,15 +100,6 @@ class RocketR60VServiceBoilerWaterHeaterEntity(WaterHeaterEntity):
         )
         self._attr_available = True
         self._attr_name = "Service Boiler"
-
-        if self.data.temperature_unit == "Fahrenheit":
-            self._attr_temperature_unit = "°F"
-            self._attr_min_temp = 230
-            self._attr_max_temp = 259
-        else:
-            self._attr_temperature_unit = "°C"
-            self._attr_min_temp = 110
-            self._attr_max_temp = 126
 
         self._attr_unique_id = "rocket_r60v_service_boiler"
 
@@ -145,12 +129,3 @@ class RocketR60VServiceBoilerWaterHeaterEntity(WaterHeaterEntity):
 
         self._attr_current_temperature = self.data.current_service_boiler_temperature
         self._attr_target_temperature = self.data.service_boiler_temperature
-
-        if self.data.temperature_unit == "Fahrenheit":
-            self._attr_temperature_unit = "°F"
-            self._attr_min_temp = 230
-            self._attr_max_temp = 259
-        else:
-            self._attr_temperature_unit = "°C"
-            self._attr_min_temp = 110
-            self._attr_max_temp = 126
