@@ -9,9 +9,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from rocket_r60v.exceptions import RocketError
-from rocket_r60v.machine import Machine
 
 from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
+from .locked_machine import LockedMachine
 
 # Every surface is re-enabled: the flooding that once forced this down to
 # SWITCH-only is now safe when the integration talks to the bundled bridge,
@@ -37,7 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     host = entry.data.get(CONF_HOST, DEFAULT_HOST)
     port = entry.data.get(CONF_PORT, DEFAULT_PORT)
-    machine = Machine(address=host, port=port)
+    machine = LockedMachine(address=host, port=port)
 
     try:
         # connect() opens a socket -- keep it off the event loop.

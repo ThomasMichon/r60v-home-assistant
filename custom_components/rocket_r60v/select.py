@@ -15,6 +15,9 @@ from homeassistant.helpers.entity import DeviceInfo
 from .const import DOMAIN
 
 
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
