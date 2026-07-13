@@ -70,7 +70,7 @@ class RocketR60VWaterFeedSelectEntity(SelectEntity):
         )
 
     def select_option(self, option: str) -> None:
-        self.data.active_profile = option
+        self.data.water_feed = option
         self.schedule_update_ha_state()
 
     def update(self) -> None:

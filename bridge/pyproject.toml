@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rocket-r60v-bridge"
+version = "1.0.0"
+description = "Rocket R60V protocol codec, wire-level emulator, and connection-governing bridge"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Thomas Michon" }]
+dependencies = ["paho-mqtt>=1.6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+r60v-emulator = "r60v_broker.emulator:main"
+r60v-bridge = "r60v_broker.broker:main"
+
+[tool.setuptools]
+packages = ["r60v_broker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

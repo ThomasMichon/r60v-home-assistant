@@ -1,43 +1,50 @@
 """The Rocket R60V integration."""
 from __future__ import annotations
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.core import HomeAssistant
 from datetime import timedelta
 
-from .const import DOMAIN
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST, CONF_PORT, Platform
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
+from rocket_r60v.exceptions import RocketError
 from rocket_r60v.machine import Machine
 
-from .FakeMachine import FakeMachine
+from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
 
-# TODO List the platforms that you want to support.
-# For your initial PR, limit it to 1 platform.
+# Every surface is re-enabled: the flooding that once forced this down to
+# SWITCH-only is now absorbed by the broker's governor-fronted endpoint (see
+# const.py), so per-setting reads across all platforms are safe.
 PLATFORMS: list[Platform] = [
-    Platform.SWITCH#,
-    #Platform.SENSOR,
-    #Platform.SELECT,
-    #Platform.TEXT,
-    #Platform.WATER_HEATER,
+    Platform.SWITCH,
+    Platform.SENSOR,
+    Platform.SELECT,
+    Platform.TEXT,
+    Platform.WATER_HEATER,
 ]
 
 PARALLEL_UPDATES = 1
 
 DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Rocket R60V from a config entry."""
 
     hass.data.setdefault(DOMAIN, {})
 
-    machine = Machine()
+    host = entry.data.get(CONF_HOST, DEFAULT_HOST)
+    port = entry.data.get(CONF_PORT, DEFAULT_PORT)
+    machine = Machine(address=host, port=port)
 
     try:
-        machine.connect()
-    except TimeoutError:
-        raise ConfigEntryNotReady("Cannot connect to a Rocket R60V")
+        # connect() opens a socket -- keep it off the event loop.
+        await hass.async_add_executor_job(machine.connect)
+    except (RocketError, OSError, TimeoutError) as err:
+        raise ConfigEntryNotReady(
+            f"Cannot connect to a Rocket R60V at {host}:{port}"
+        ) from err
 
     hass.data[DOMAIN][entry.entry_id] = machine
 

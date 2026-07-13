@@ -1,0 +1,34 @@
+# Example systemd unit for the Rocket R60V bridge.
+#
+# Install the bridge into a venv (see bridge/README.md), copy this file to
+# /etc/systemd/system/rocket-r60v-bridge.service, edit the paths and the
+# environment below, then:
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now rocket-r60v-bridge
+#
+# Keep secrets (an MQTT password) out of this file: put them in a root-only
+# EnvironmentFile (chmod 600) and reference it instead of inline Environment=.
+
+[Unit]
+Description=Rocket R60V bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to the venv the bridge was installed into.
+ExecStart=/opt/rocket-r60v-bridge/.venv/bin/r60v-bridge
+Restart=always
+RestartSec=5
+
+# The machine's own AP. If your bridge reaches it on a pinned Wi-Fi radio, this
+# stays 192.168.1.1; the front-end is what the LAN talks to.
+Environment=R60V_HOST=192.168.1.1
+Environment=R60V_FRONTEND_ENABLED=true
+# Optional MQTT Discovery: uncomment and point at your broker to enable it.
+#Environment=MQTT_HOST=192.168.1.10
+#EnvironmentFile=/etc/rocket-r60v-bridge.env
+
+[Install]
+WantedBy=multi-user.target
