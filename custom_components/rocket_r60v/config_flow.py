@@ -1,8 +1,8 @@
 """Config flow for Rocket R60V.
 
-A simple user-input flow: the operator enters the control endpoint (defaulting
-to the facility's governor-fronted bridge endpoint), and we verify we can reach
-it before creating the entry. Replaces the old zero-config discovery flow, which
+A simple user-input flow: the operator enters the control endpoint (the machine's
+own AP at 192.168.1.1, or a bridge's LAN address), and we verify we can reach it
+before creating the entry. Replaces the old zero-config discovery flow, which
 could only ever reach the machine's own 192.168.1.1 AP.
 """
 from __future__ import annotations

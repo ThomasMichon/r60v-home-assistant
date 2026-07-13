@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Rocket R60V",
-        "description": "Enter the control endpoint. Default is the Aperture bridge (nova-prospekt); use the machine's own AP (192.168.1.1) only if talking to it directly.",
+        "description": "Enter the machine's control endpoint. Connect directly to the machine's own access point at 192.168.1.1, or, if you run the bundled bridge on a host with a spare Wi-Fi radio, enter the bridge's LAN address instead.",
         "data": {
           "host": "Host",
           "port": "Port"

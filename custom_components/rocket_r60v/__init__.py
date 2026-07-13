@@ -14,8 +14,9 @@ from rocket_r60v.machine import Machine
 from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
 
 # Every surface is re-enabled: the flooding that once forced this down to
-# SWITCH-only is now absorbed by the broker's governor-fronted endpoint (see
-# const.py), so per-setting reads across all platforms are safe.
+# SWITCH-only is now safe when the integration talks to the bundled bridge,
+# whose governor serializes all callers onto one upstream socket (see the
+# `bridge/` directory and the project README).
 PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.SENSOR,
