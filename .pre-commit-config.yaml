@@ -1,0 +1,21 @@
+# Pre-commit hooks for the Rocket R60V integration.
+#
+# Local hooks (no network fetch): they run the repo's own tooling, so
+# ``ruff`` and Python must be available on PATH in your dev environment
+# (e.g. ``pip install ruff`` in your virtualenv).
+repos:
+  - repo: local
+    hooks:
+      - id: check-no-loop-io
+        name: No blocking device I/O in entity __init__/property getters
+        entry: python scripts/check_no_loop_io.py
+        language: system
+        pass_filenames: false
+        files: ^custom_components/rocket_r60v/.*\.py$
+
+      - id: ruff
+        name: Ruff (integration)
+        entry: ruff check custom_components/
+        language: system
+        pass_filenames: false
+        files: ^custom_components/.*\.py$

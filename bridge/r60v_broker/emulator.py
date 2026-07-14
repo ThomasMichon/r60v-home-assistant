@@ -145,6 +145,10 @@ class R60VEmulator:
         self.model = model or MachineModel()
         self._server: asyncio.AbstractServer | None = None
         self._ticker: asyncio.Task[None] | None = None
+        # Track live client connections so stop() can drop them; otherwise a
+        # peer that is idle mid-read keeps a handler task alive and blocks a
+        # clean shutdown (e.g. at the end of a test).
+        self._writers: set[asyncio.StreamWriter] = set()
 
     async def start(self) -> None:
         """Start the server and the background dynamics ticker."""
@@ -163,9 +167,14 @@ class R60VEmulator:
             await self._server.serve_forever()
 
     async def stop(self) -> None:
-        """Stop the server and ticker."""
+        """Stop the server and ticker, and drop any live client connections."""
         if self._ticker:
             self._ticker.cancel()
+        # Close active client connections so their handler tasks unblock and
+        # finish, allowing the event loop to shut down cleanly.
+        for writer in list(self._writers):
+            writer.close()
+        self._writers.clear()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -187,6 +196,7 @@ class R60VEmulator:
     ) -> None:
         peer = writer.get_extra_info("peername")
         LOGGER.info("client connected: %s", peer)
+        self._writers.add(writer)
         writer.write(p.HELLO.encode())
         await writer.drain()
         try:
@@ -198,10 +208,11 @@ class R60VEmulator:
                     break
                 writer.write(response.encode())
                 await writer.drain()
-        except asyncio.IncompleteReadError:
+        except (asyncio.IncompleteReadError, asyncio.CancelledError, OSError):
             pass
         finally:
             LOGGER.info("client disconnected: %s", peer)
+            self._writers.discard(writer)
             writer.close()
 
     async def _read_rest(self, reader: asyncio.StreamReader, envelope: bytes) -> str:

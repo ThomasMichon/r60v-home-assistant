@@ -1,0 +1,35 @@
+# Repository tooling configuration.
+#
+# This project is a Home Assistant custom integration (``custom_components``)
+# plus a companion bridge package (``bridge/``). The bridge ships its own
+# ``bridge/pyproject.toml``; this root file configures repo-wide tooling
+# (Ruff) for the integration and support scripts. It intentionally does NOT
+# declare the integration's runtime dependencies -- those live in
+# ``custom_components/rocket_r60v/manifest.json`` (Home Assistant installs them).
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+# The companion bridge package under ``bridge/`` is a self-contained subproject
+# with its own packaging and test suite; this config governs the integration,
+# support scripts, and tests. CI lints ``custom_components/`` explicitly.
+extend-exclude = ["bridge"]
+
+[tool.ruff.lint]
+# E/F: pycodestyle errors + Pyflakes (unused imports/names, undefined names).
+# ASYNC: flake8-async -- flags blocking calls inside async code, directly
+# reinforcing this integration's hard rule that the event loop must never be
+# blocked (the class of bug that once hung Home Assistant at startup).
+select = ["E", "F", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use broad patterns and long lines for readability.
+"tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+# Repo-root tests only (the bridge has its own suite under bridge/tests).
+testpaths = ["tests"]
+# pytest-homeassistant-custom-component / HA tests are async; auto mode lets us
+# write ``async def test_*`` and async fixtures without per-item markers.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
