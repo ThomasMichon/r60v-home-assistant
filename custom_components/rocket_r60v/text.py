@@ -40,7 +40,10 @@ class RocketR60VPressureProfileTextEntity(TextEntity):
         self._attr_available = True
         self._attr_name = f"Pressure Profile {key}"
         self._attr_unique_id = f"rocket_r60v_profile_{key.lower()}"
-        self._attr_pattern = r"""\d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)?"""
+        self._attr_pattern = (
+            r"\d+:\d+(\.\d+)? \d+:\d+(\.\d+)? \d+:\d+(\.\d+)? "
+            r"\d+:\d+(\.\d+)? \d+:\d+(\.\d+)?"
+        )
         self._attr_mode = "text"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, "instance")},

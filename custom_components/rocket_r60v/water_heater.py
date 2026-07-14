@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from rocket_r60v.machine import Machine
-from typing import Any
 
 from homeassistant.components.water_heater import (
     WaterHeaterEntity,

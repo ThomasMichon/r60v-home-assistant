@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 from rocket_r60v.machine import Machine
-from homeassistant.helpers.typing import StateType
-from datetime import date, datetime
-from decimal import Decimal
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry

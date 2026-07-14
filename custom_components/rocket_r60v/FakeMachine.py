@@ -1,6 +1,3 @@
-from rocket_r60v.machine import Machine
-
-
 class FakeMachine:
     def __init__(self):
         self.active_profile = "A"
