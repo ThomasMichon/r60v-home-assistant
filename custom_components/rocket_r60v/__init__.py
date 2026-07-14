@@ -1,64 +1,66 @@
 """The Rocket R60V integration."""
 from __future__ import annotations
 
-from datetime import timedelta
+import logging
+from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
 
-from rocket_r60v.exceptions import RocketError
+from .client import R60VClient
+from .const import DEFAULT_HOST, DEFAULT_PORT
+from .coordinator import R60VCoordinator
 
-from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
-from .locked_machine import LockedMachine
+LOGGER = logging.getLogger(__name__)
 
-# Every surface is re-enabled: the flooding that once forced this down to
-# SWITCH-only is now safe when the integration talks to the bundled bridge,
-# whose governor serializes all callers onto one upstream socket (see the
-# `bridge/` directory and the project README).
 PLATFORMS: list[Platform] = [
-    Platform.SWITCH,
     Platform.SENSOR,
+    Platform.SWITCH,
     Platform.SELECT,
-    Platform.TEXT,
-    Platform.WATER_HEATER,
+    Platform.TIME,
+    Platform.CLIMATE,
 ]
 
+#: One request in flight at a time is enforced by the client's lock; keep HA
+#: from parallelizing writes on top of that.
 PARALLEL_UPDATES = 1
 
-DEFAULT_SCAN_INTERVAL = timedelta(minutes=1)
+
+@dataclass
+class R60VRuntimeData:
+    """Objects shared across the integration for one config entry."""
+
+    client: R60VClient
+    coordinator: R60VCoordinator
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+type R60VConfigEntry = ConfigEntry[R60VRuntimeData]
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool:
     """Set up Rocket R60V from a config entry."""
-
-    hass.data.setdefault(DOMAIN, {})
-
     host = entry.data.get(CONF_HOST, DEFAULT_HOST)
     port = entry.data.get(CONF_PORT, DEFAULT_PORT)
-    machine = LockedMachine(address=host, port=port)
+
+    client = R60VClient(host, port)
+    coordinator = R60VCoordinator(hass, client)
 
     try:
-        # connect() opens a socket -- keep it off the event loop.
-        await hass.async_add_executor_job(machine.connect)
-    except (RocketError, OSError, TimeoutError) as err:
-        raise ConfigEntryNotReady(
-            f"Cannot connect to a Rocket R60V at {host}:{port}"
-        ) from err
+        # Raises ConfigEntryNotReady on failure -- never hangs the loop.
+        await coordinator.async_config_entry_first_refresh()
+    except Exception:
+        await client.close()
+        raise
 
-    hass.data[DOMAIN][entry.entry_id] = machine
-
+    entry.runtime_data = R60VRuntimeData(client=client, coordinator=coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        machine = hass.data[DOMAIN].pop(entry.entry_id)
-
-        del machine
-
+async def async_unload_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool:
+    """Unload a config entry and close the client."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        await entry.runtime_data.client.close()
     return unload_ok

@@ -1,0 +1,65 @@
+"""Climate platform for the Rocket R60V boilers."""
+from __future__ import annotations
+
+from typing import Any
+
+from homeassistant.components.climate import (
+    ClimateEntity,
+    ClimateEntityFeature,
+    HVACMode,
+)
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from . import R60VConfigEntry
+from .entities import CLIMATE_ENTITIES, R60VClimateDescription
+from .entity import R60VEntity
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: R60VConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up R60V boiler thermostats from a config entry."""
+    coordinator = entry.runtime_data.coordinator
+    async_add_entities(
+        R60VClimate(coordinator, entry.unique_id, desc) for desc in CLIMATE_ENTITIES
+    )
+
+
+class R60VClimate(R60VEntity, ClimateEntity):
+    """A boiler (current temp + setpoint) modeled as a fixed-heat thermostat."""
+
+    _attr_hvac_modes = [HVACMode.HEAT]
+    _attr_hvac_mode = HVACMode.HEAT
+    _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+
+    def __init__(self, coordinator, unique_id: str, desc: R60VClimateDescription) -> None:
+        # Static attributes only -- no device I/O here (runs on the event loop).
+        super().__init__(coordinator, unique_id, desc.key, desc.name)
+        self._desc = desc
+        self._attr_icon = desc.icon
+        self._attr_min_temp = desc.min_temp
+        self._attr_max_temp = desc.max_temp
+        self._attr_target_temperature_step = desc.temp_step
+
+    @property
+    def current_temperature(self) -> float | None:
+        """Decode the live boiler temperature from the cached snapshot."""
+        return self._desc.current(self.coordinator.data)
+
+    @property
+    def target_temperature(self) -> float | None:
+        """Decode the boiler setpoint from the cached snapshot."""
+        return self._desc.target(self.coordinator.data)
+
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        temperature = kwargs.get(ATTR_TEMPERATURE)
+        if temperature is None:
+            return
+        address, data = self._desc.encode_target(temperature)
+        await self.coordinator.client.write(address, data)
+        await self.coordinator.async_request_refresh()

@@ -1,22 +1,21 @@
-"""Startup regression test: setting up the integration must not block the loop.
+"""Integration tests against the wire-level R60V emulator.
 
-This is the test that would have caught the original outage. The Rocket R60V
-entities used to perform synchronous device socket reads inside their
-``__init__`` methods; Home Assistant constructs entities on the event loop, so
-that blocking I/O hung HA at startup.
+These stand up the bundled emulator (a real asyncio TCP server speaking the R60V
+protocol) on an ephemeral loopback port, point a config entry at it, and set the
+integration up through the real HA config-entry machinery.
 
-Here we stand up the bundled wire-level emulator (a real asyncio TCP server that
-speaks the R60V protocol) on an ephemeral loopback port, point a config entry at
-it, and set the integration up through the real HA config-entry machinery. The
-whole setup runs inside ``asyncio.timeout(30)`` so that a loop-blocking setup
-fails loudly instead of hanging. ``pytest-homeassistant-custom-component`` also
-enables HA's blocking-call detector during setup, so a synchronous socket read
-on the loop raises rather than silently stalling.
+Coverage:
 
-If the pinned ``rocket-r60v==1.2.1`` client cannot decode some of the emulator's
-modeled registers, individual entities may report as unavailable; the essential
-guarantee this test protects is that setup *completes* (``LOADED``) without
-blocking the loop and that entities are created. See ``STRICT_ENTITY_STATE``.
+- :func:`test_all_entities_load` -- every expected entity is registered on the
+  right platform, is not ``STATE_UNAVAILABLE``, and one decoded value per
+  platform is spot-checked. This is also the startup regression test: setup runs
+  inside ``asyncio.timeout`` so a loop-blocking ``__init__`` (the original bug)
+  fails loudly instead of hanging. ``pytest-homeassistant-custom-component``
+  enables HA's blocking-call detector during setup as a second guard.
+- :func:`test_write_round_trip` -- writing an entity reaches the emulator and the
+  next coordinator refresh reflects it.
+- :func:`test_unavailable_on_dead_endpoint` -- when the device disappears
+  mid-run, entities go unavailable and the refresh fails fast (no loop block).
 """
 from __future__ import annotations
 
@@ -24,36 +23,43 @@ import asyncio
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_HOST, CONF_PORT, STATE_UNAVAILABLE
+from homeassistant.const import (
+    ATTR_TEMPERATURE,
+    CONF_HOST,
+    CONF_PORT,
+    STATE_UNAVAILABLE,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from r60v_broker.emulator import R60VEmulator
+from r60v_broker.protocol import Address
 
 DOMAIN = "rocket_r60v"
 SETUP_TIMEOUT = 30
 
-# The always-present entity created by the SWITCH platform, identified by its
-# stable unique_id (the entity_id is derived from the entity name and may vary).
-STANDBY_UNIQUE_ID = "rocket_r60v_standby"
-STANDBY_PLATFORM = "switch"
-
-# When True, also assert the standby switch is not STATE_UNAVAILABLE (i.e. the
-# pinned client successfully read live state from the emulator). Kept True; flip
-# to False only if a client/emulator register-encoding mismatch makes the read
-# unreliable in CI (setup-LOADED + entity-present is the hard guarantee).
-STRICT_ENTITY_STATE = True
+# The 13 entities the integration exposes, as (platform, unique_id suffix).
+EXPECTED_ENTITIES: list[tuple[str, str]] = [
+    ("sensor", "current_pressure"),
+    ("sensor", "display"),
+    ("sensor", "total_coffee_count"),
+    ("switch", "power"),
+    ("switch", "service_boiler"),
+    ("select", "active_profile"),
+    ("select", "water_feed"),
+    ("select", "temperature_unit"),
+    ("select", "language"),
+    ("time", "auto_on"),
+    ("time", "auto_off"),
+    ("climate", "brew_boiler"),
+    ("climate", "steam_boiler"),
+]
 
 
 @pytest.fixture
 async def emulator(socket_enabled):
-    """Run the R60V wire emulator on an ephemeral loopback port for one test.
-
-    ``socket_enabled`` (from pytest-socket, bundled with the HA test plugin)
-    re-enables real sockets, which HA tests block by default; the emulator and
-    the integration's client need a genuine loopback socket to talk over.
-    """
+    """Run the R60V wire emulator on an ephemeral loopback port for one test."""
     emu = R60VEmulator(host="127.0.0.1", port=0)
     await emu.start()
     try:
@@ -62,50 +68,124 @@ async def emulator(socket_enabled):
         await emu.stop()
 
 
-async def test_setup_entry_does_not_block_event_loop(
-    hass: HomeAssistant, emulator: R60VEmulator
-) -> None:
-    """The integration sets up against a live device without blocking the loop."""
-    port = emulator.bound_port
+def _uid(entry: MockConfigEntry, suffix: str) -> str:
+    return f"{entry.unique_id}_{suffix}"
 
+
+async def _setup_against(hass: HomeAssistant, port: int) -> MockConfigEntry:
+    """Create and set up a config entry pointed at ``127.0.0.1:port``."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "127.0.0.1", CONF_PORT: port},
         unique_id=f"127.0.0.1:{port}",
     )
     entry.add_to_hass(hass)
-
-    # A blocking read on the event loop would either trip HA's blocking-call
-    # detector or stall here; the timeout turns a stall into a hard failure.
     async with asyncio.timeout(SETUP_TIMEOUT):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    return entry
+
+
+async def test_all_entities_load(
+    hass: HomeAssistant, emulator: R60VEmulator
+) -> None:
+    """All 13 entities load on the right platform, available, decoded sanely."""
+    entry = await _setup_against(hass, emulator.bound_port)
+    ent_reg = er.async_get(hass)
 
     try:
-        assert entry.state is ConfigEntryState.LOADED
+        resolved: dict[str, str] = {}
+        for platform, suffix in EXPECTED_ENTITIES:
+            entity_id = ent_reg.async_get_entity_id(platform, DOMAIN, _uid(entry, suffix))
+            assert entity_id is not None, f"{platform}/{suffix} not registered"
+            state = hass.states.get(entity_id)
+            assert state is not None, f"{entity_id} has no state"
+            assert state.state != STATE_UNAVAILABLE, f"{entity_id} is unavailable"
+            resolved[suffix] = entity_id
 
-        # Entities are registered against this config entry by the platforms.
-        ent_reg = er.async_get(hass)
+        # Exactly the expected set was created for this entry (no more, no less).
         registered = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-        assert registered, "no entities were registered for the config entry"
+        assert len(registered) == len(EXPECTED_ENTITIES)
 
-        # The standby switch must exist and have fetched real state (i.e. not be
-        # unavailable) -- proving initial state was read off-loop before add.
-        standby_id = ent_reg.async_get_entity_id(
-            STANDBY_PLATFORM, DOMAIN, STANDBY_UNIQUE_ID
-        )
-        assert standby_id is not None, "standby switch was not registered"
-
-        standby = hass.states.get(standby_id)
-        assert standby is not None, f"{standby_id} has no state"
-
-        if STRICT_ENTITY_STATE:
-            assert standby.state != STATE_UNAVAILABLE, (
-                f"{standby_id} is unavailable -- initial state was not fetched "
-                f"off-loop via update_before_add=True"
-            )
+        # --- one decoded value spot-check per platform ---
+        # sensor: emulator display default is "READY".
+        assert hass.states.get(resolved["display"]).state == "READY"
+        # switch: STANDBY default 0 -> machine running -> Power on.
+        assert hass.states.get(resolved["power"]).state == "on"
+        # select: LANGUAGE default 0 -> english.
+        assert hass.states.get(resolved["language"]).state == "english"
+        # time: emulator auto-on default is 14:00.
+        assert hass.states.get(resolved["auto_on"]).state == "14:00:00"
+        # climate: brew boiler setpoint default 105 C.
+        brew = hass.states.get(resolved["brew_boiler"])
+        assert brew.attributes[ATTR_TEMPERATURE] == 105
     finally:
-        # Unload so the integration releases its device connection, letting the
-        # emulator's client handler finish and the loop tear down cleanly.
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_write_round_trip(
+    hass: HomeAssistant, emulator: R60VEmulator
+) -> None:
+    """A write reaches the emulator and the next refresh reflects it."""
+    entry = await _setup_against(hass, emulator.bound_port)
+    ent_reg = er.async_get(hass)
+    coordinator = entry.runtime_data.coordinator
+
+    try:
+        # --- switch write: turn Power off -> STANDBY byte becomes 1 ---
+        power_id = ent_reg.async_get_entity_id("switch", DOMAIN, _uid(entry, "power"))
+        async with asyncio.timeout(SETUP_TIMEOUT):
+            await hass.services.async_call(
+                "switch", "turn_off", {"entity_id": power_id}, blocking=True
+            )
+            await hass.async_block_till_done()
+        assert emulator.model.settings[Address.STANDBY] == 1
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert hass.states.get(power_id).state == "off"
+
+        # --- climate write: set brew boiler setpoint to 100 C ---
+        brew_id = ent_reg.async_get_entity_id("climate", DOMAIN, _uid(entry, "brew_boiler"))
+        async with asyncio.timeout(SETUP_TIMEOUT):
+            await hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {"entity_id": brew_id, ATTR_TEMPERATURE: 100},
+                blocking=True,
+            )
+            await hass.async_block_till_done()
+        assert emulator.model.settings[Address.BREW_BOILER_TEMP] == 100
+
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert hass.states.get(brew_id).attributes[ATTR_TEMPERATURE] == 100
+    finally:
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_unavailable_on_dead_endpoint(
+    hass: HomeAssistant, emulator: R60VEmulator
+) -> None:
+    """When the device disappears, entities go unavailable without hanging."""
+    entry = await _setup_against(hass, emulator.bound_port)
+    ent_reg = er.async_get(hass)
+    coordinator = entry.runtime_data.coordinator
+    power_id = ent_reg.async_get_entity_id("switch", DOMAIN, _uid(entry, "power"))
+
+    try:
+        # Kill the device mid-run, then poll: the refresh must fail fast (the
+        # client reconnects once and raises) rather than blocking the loop.
+        await emulator.stop()
+        async with asyncio.timeout(SETUP_TIMEOUT):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+        assert coordinator.last_update_success is False
+        assert hass.states.get(power_id).state == STATE_UNAVAILABLE
+    finally:
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()

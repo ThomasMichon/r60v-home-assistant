@@ -15,20 +15,24 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.data_entry_flow import FlowResult
 
-from rocket_r60v.machine import Machine
-
+from .client import R60VClient, R60VConnectionError
 from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
+from .protocol import SETTINGS_BASE, SETTINGS_LEN
 
 
-def _can_connect(host: str, port: int) -> bool:
-    """Blocking reachability probe -- run in an executor."""
+async def _can_connect(host: str, port: int) -> bool:
+    """Async reachability probe -- opens one connection and reads settings.
+
+    Uses the vendored async client, so it never blocks the event loop.
+    """
+    client = R60VClient(host, port)
     try:
-        machine = Machine(address=host, port=port)
-        machine.connect()
-        machine.disconnect()
+        await client.read(SETTINGS_BASE, SETTINGS_LEN)
         return True
-    except Exception:  # noqa: BLE001 -- any failure means "not reachable"
+    except (R60VConnectionError, OSError):
         return False
+    finally:
+        await client.close()
 
 
 class RocketR60VConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -46,7 +50,7 @@ class RocketR60VConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             port = user_input[CONF_PORT]
             await self.async_set_unique_id(f"{host}:{port}")
             self._abort_if_unique_id_configured()
-            if await self.hass.async_add_executor_job(_can_connect, host, port):
+            if await _can_connect(host, port):
                 return self.async_create_entry(
                     title=f"Rocket R60V ({host})", data=user_input
                 )

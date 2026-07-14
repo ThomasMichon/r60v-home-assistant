@@ -1,56 +1,51 @@
-"""Support for RocketR60V switches."""
+"""Switch platform for the Rocket R60V."""
 from __future__ import annotations
 
-from rocket_r60v.machine import Machine
 from typing import Any
 
-from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity import DeviceInfo
 
-from .const import DOMAIN
-
-
-PARALLEL_UPDATES = 1
+from . import R60VConfigEntry
+from .entities import R60VEntityDescription, entities_for_platform
+from .entity import R60VEntity
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: R60VConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    data = hass.data[DOMAIN]
+    """Set up R60V switches from a config entry."""
+    coordinator = entry.runtime_data.coordinator
+    async_add_entities(
+        R60VSwitch(coordinator, entry.unique_id, desc)
+        for desc in entities_for_platform("switch")
+    )
 
-    async_add_entities([RocketR60VSwitchEntity(data, entry)], True)
 
+class R60VSwitch(R60VEntity, SwitchEntity):
+    """A boolean R60V setting surfaced as a switch."""
 
-class RocketR60VSwitchEntity(SwitchEntity):
-    def __init__(self, data: Machine, entry: ConfigEntry) -> None:
-        self.data = data[entry.entry_id]
+    def __init__(self, coordinator, unique_id: str, desc: R60VEntityDescription) -> None:
+        # Static attributes only -- no device I/O here (runs on the event loop).
+        super().__init__(coordinator, unique_id, desc.key, desc.name)
+        self._desc = desc
+        self._attr_icon = desc.icon
 
-        # No device I/O here: HA runs entity __init__ on the event loop, so a
-        # blocking socket read would hang startup. Dynamic state starts as a
-        # safe default and is fetched in update() (run off-loop via
-        # update_before_add=True).
-        self._attr_is_on = None
-        self._attr_available = True
-        self._attr_name = "Standby"
-        self._attr_unique_id = "rocket_r60v_standby"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, "instance")},
-            manufacturer="Rocket Espresso",
-            model="R60V",
-            name="Rocket R60V",
-        )
-        self._attr_device_class = SwitchDeviceClass.SWITCH
+    @property
+    def is_on(self) -> bool:
+        """Decode on/off from the coordinator's cached snapshot."""
+        return bool(self._desc.decode(self.coordinator.data))
 
-    def turn_on(self, **kwargs: Any) -> None:
-        self.data.standby = "on"
-        self.schedule_update_ha_state()
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._write(True)
 
-    def turn_off(self, **kwargs: Any) -> None:
-        self.data.standby = "off"
-        self.schedule_update_ha_state()
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._write(False)
 
-    def update(self) -> None:
-        self._attr_is_on = self.data.standby == "on"
+    async def _write(self, value: bool) -> None:
+        address, data = self._desc.encode(value)
+        await self.coordinator.client.write(address, data)
+        await self.coordinator.async_request_refresh()
