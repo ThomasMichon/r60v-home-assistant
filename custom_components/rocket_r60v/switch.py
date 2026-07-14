@@ -28,7 +28,11 @@ class RocketR60VSwitchEntity(SwitchEntity):
     def __init__(self, data: Machine, entry: ConfigEntry) -> None:
         self.data = data[entry.entry_id]
 
-        self._attr_is_on = self.data.standby == "on"
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as a
+        # safe default and is fetched in update() (run off-loop via
+        # update_before_add=True).
+        self._attr_is_on = None
         self._attr_available = True
         self._attr_name = "Standby"
         self._attr_unique_id = "rocket_r60v_standby"

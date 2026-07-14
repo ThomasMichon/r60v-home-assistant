@@ -46,6 +46,10 @@ class RocketR60VCurrentBrewTimeSensorEntity(SensorEntity):
     def __init__(self, data: Machine, entry: ConfigEntry) -> None:
         self.data = data[entry.entry_id]
 
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts at 0
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_native_value = 0
         self._attr_available = True
         self._attr_name = "Current Brew Time"
         self._attr_unique_id = "rocket_r60v_current_brew_time"
@@ -55,7 +59,6 @@ class RocketR60VCurrentBrewTimeSensorEntity(SensorEntity):
             model="R60V",
             name="Rocket R60V",
         )
-        self.update()
 
     def update(self) -> None:
         # The library returns the pouring time (seconds) while a shot is live,

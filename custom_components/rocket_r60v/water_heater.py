@@ -47,8 +47,11 @@ class RocketR60VBrewBoilerWaterHeaterEntity(WaterHeaterEntity):
         self._attr_current_operation = "electric"
         self._attr_operation_list = ["electric"]
 
-        self._attr_current_temperature = self.data.current_brew_boiler_temperature
-        self._attr_target_temperature = self.data.brew_boiler_temperature
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as None
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_current_temperature = None
+        self._attr_target_temperature = None
         self._attr_is_away_mode_on = False
         self._attr_supported_features = (
             WaterHeaterEntityFeature.TARGET_TEMPERATURE
@@ -84,13 +87,12 @@ class RocketR60VServiceBoilerWaterHeaterEntity(WaterHeaterEntity):
     def __init__(self, data: Machine, entry: ConfigEntry) -> None:
         self.data = data[entry.entry_id]
 
-        if self.data.service_boiler == "on":
-            self._attr_current_operation = "electric"
-        else:
-            self._attr_current_operation = "off"
-
-        self._attr_current_temperature = self.data.current_service_boiler_temperature
-        self._attr_target_temperature = self.data.service_boiler_temperature
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as None
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_current_operation = None
+        self._attr_current_temperature = None
+        self._attr_target_temperature = None
 
         self._attr_is_away_mode_on = False
         self._attr_operation_list = ["electric", "off"]

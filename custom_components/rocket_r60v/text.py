@@ -49,12 +49,10 @@ class RocketR60VPressureProfileTextEntity(TextEntity):
             name="Rocket R60V",
         )
 
-        if self.key == "A":
-            self._attr_native_value = self.data.profile_a
-        elif self.key == "B":
-            self._attr_native_value = self.data.profile_b
-        else:
-            self._attr_native_value = self.data.profile_c
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as None
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_native_value = None
 
     def set_value(self, value: str) -> None:
         if self.key == "A":
@@ -90,7 +88,10 @@ class RocketR60VAutoOnTimeTextEntity(TextEntity):
             name="Rocket R60V",
         )
 
-        self._attr_native_value = self.data.auto_on
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as None
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_native_value = None
 
     def set_value(self, value: str) -> None:
         self.data.auto_on = value
@@ -116,7 +117,10 @@ class RocketR60VAutoOffTimeTextEntity(TextEntity):
             name="Rocket R60V",
         )
 
-        self._attr_native_value = self.data.auto_off
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as None
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_native_value = None
 
     def set_value(self, value: str) -> None:
         self.data.auto_off = value

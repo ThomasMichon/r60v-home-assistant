@@ -40,7 +40,10 @@ class RocketR60VPressureProfileSelectEntity(SelectEntity):
         self._attr_name = "Pressure Profile"
         self._attr_unique_id = "rocket_r60v_pressure_profile"
         self._attr_options = ["A", "B", "C"]
-        self._attr_current_option = self.data.active_profile
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as None
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_current_option = None
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, "instance")},
             manufacturer="Rocket Espresso",
@@ -64,7 +67,10 @@ class RocketR60VWaterFeedSelectEntity(SelectEntity):
         self._attr_name = "Water Feed"
         self._attr_unique_id = "rocket_r60v_water_feed"
         self._attr_options = ["HardPlumbed", "Reservoir"]
-        self._attr_current_option = self.data.water_feed
+        # No device I/O here: HA runs entity __init__ on the event loop, so a
+        # blocking socket read would hang startup. Dynamic state starts as None
+        # and is fetched in update() (run off-loop via update_before_add=True).
+        self._attr_current_option = None
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, "instance")},
             manufacturer="Rocket Espresso",
