@@ -9,5 +9,5 @@
   "documentation": "https://github.com/ThomasMichon/r60v-home-assistant/blob/main/README.md",
   "iot_class": "local_polling",
   "requirements": [],
-  "version": "2.0.0"
+  "version": "2.0.1"
 }

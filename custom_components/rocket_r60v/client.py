@@ -143,7 +143,7 @@ class R60VClient:
         """
         async with self._lock:
             last_exc: Exception | None = None
-            for attempt in range(2):
+            for attempt in range(3):
                 if not self.connected:
                     try:
                         await self.connect()
@@ -181,6 +181,26 @@ class R60VClient:
         if elapsed < self.request_gap:
             await asyncio.sleep(self.request_gap - elapsed)
 
+    async def _drain(self) -> None:
+        """Discard any pending/stale bytes before issuing a fresh request.
+
+        The machine occasionally answers late: a reply to a *previous* request
+        can still be sitting in the socket buffer, which would be mis-read as
+        this request's reply and desync the stream. Draining it first keeps the
+        half-duplex conversation aligned. Best-effort: a clean timeout or empty
+        read means nothing is pending.
+        """
+        if self._reader is None:
+            return
+        while True:
+            try:
+                chunk = await asyncio.wait_for(self._reader.read(1024), timeout=0.05)
+            except (TimeoutError, asyncio.TimeoutError):
+                return
+            if not chunk:
+                return
+            LOGGER.debug("drained %d stale byte(s) before request", len(chunk))
+
     async def _exchange(self, frame: str) -> Frame:
         """Write one frame and read its fixed-length reply (no lock handling).
 
@@ -192,6 +212,9 @@ class R60VClient:
         assert self._reader is not None and self._writer is not None
         want = _expected_response_len(frame)
         for attempt in range(self.max_retries + 1):
+            # Clear any late reply to a previous request so it cannot be
+            # mistaken for this one.
+            await self._drain()
             await self._pace()
             self._last_request_at = time.monotonic()
             self._writer.write(frame.encode("ascii"))

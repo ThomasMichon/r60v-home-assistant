@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntry
 
 from .client import R60VClient
-from .const import DEFAULT_HOST, DEFAULT_PORT
+from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
 from .coordinator import R60VCoordinator
 
 LOGGER = logging.getLogger(__name__)
@@ -64,3 +65,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> boo
     if unload_ok:
         await entry.runtime_data.client.close()
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device: DeviceEntry
+) -> bool:
+    """Allow deleting a device no longer provided (e.g. a pre-rewrite orphan)."""
+    return not any(
+        domain == DOMAIN and ident == config_entry.unique_id
+        for (domain, ident) in device.identifiers
+    )

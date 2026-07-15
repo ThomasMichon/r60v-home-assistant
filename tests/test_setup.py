@@ -20,6 +20,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
@@ -33,6 +34,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.rocket_r60v.client import R60VConnectionError
+from custom_components.rocket_r60v.coordinator import FAILURE_TOLERANCE
 from r60v_broker.emulator import R60VEmulator
 from r60v_broker.protocol import Address
 
@@ -170,22 +173,66 @@ async def test_write_round_trip(
 async def test_unavailable_on_dead_endpoint(
     hass: HomeAssistant, emulator: R60VEmulator
 ) -> None:
-    """When the device disappears, entities go unavailable without hanging."""
+    """A sustained outage marks entities unavailable without hanging.
+
+    A single failed poll is tolerated (cached values are served); only after
+    ``FAILURE_TOLERANCE`` consecutive failures does the device go unavailable.
+    """
     entry = await _setup_against(hass, emulator.bound_port)
     ent_reg = er.async_get(hass)
     coordinator = entry.runtime_data.coordinator
     power_id = ent_reg.async_get_entity_id("switch", DOMAIN, _uid(entry, "power"))
 
     try:
-        # Kill the device mid-run, then poll: the refresh must fail fast (the
-        # client reconnects once and raises) rather than blocking the loop.
+        # Kill the device mid-run, then poll past the tolerance. Each refresh
+        # must fail fast (the client reconnects then raises) without hanging.
         await emulator.stop()
         async with asyncio.timeout(SETUP_TIMEOUT):
-            await coordinator.async_refresh()
-            await hass.async_block_till_done()
+            for _ in range(FAILURE_TOLERANCE + 1):
+                await coordinator.async_refresh()
+                await hass.async_block_till_done()
 
         assert coordinator.last_update_success is False
         assert hass.states.get(power_id).state == STATE_UNAVAILABLE
+    finally:
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_cached_values_served_through_transient_failure(
+    hass: HomeAssistant, emulator: R60VEmulator
+) -> None:
+    """An isolated failed poll keeps entities available with last-good values."""
+    entry = await _setup_against(hass, emulator.bound_port)
+    ent_reg = er.async_get(hass)
+    coordinator = entry.runtime_data.coordinator
+    power_id = ent_reg.async_get_entity_id("switch", DOMAIN, _uid(entry, "power"))
+    display_id = ent_reg.async_get_entity_id("sensor", DOMAIN, _uid(entry, "display"))
+
+    good_power = hass.states.get(power_id).state
+    good_display = hass.states.get(display_id).state
+
+    try:
+        # Force the next polls to fail as if the stream desynced.
+        with patch.object(
+            coordinator, "_read_snapshot",
+            side_effect=R60VConnectionError("simulated desync"),
+        ):
+            # Within tolerance: entities stay available with cached values.
+            for _ in range(FAILURE_TOLERANCE):
+                async with asyncio.timeout(SETUP_TIMEOUT):
+                    await coordinator.async_refresh()
+                    await hass.async_block_till_done()
+                assert coordinator.last_update_success is True
+                assert hass.states.get(power_id).state == good_power
+                assert hass.states.get(display_id).state == good_display
+
+            # One failure past tolerance: now the device is marked unavailable.
+            async with asyncio.timeout(SETUP_TIMEOUT):
+                await coordinator.async_refresh()
+                await hass.async_block_till_done()
+            assert coordinator.last_update_success is False
+            assert hass.states.get(power_id).state == STATE_UNAVAILABLE
     finally:
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
