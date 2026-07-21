@@ -90,6 +90,18 @@ def _live_byte(address: int) -> Callable[[StateSnapshot], int]:
     return decode
 
 
+def _live_decibar(address: int) -> Callable[[StateSnapshot], float]:
+    """Decode a live pressure register stored in decibar (tenths of a bar).
+
+    The R60V reports pressure as a single byte in tenths of a bar (raw 90 =
+    9.0 bar). Treating the raw byte as whole bar over-reports 10x.
+    """
+    def decode(s: StateSnapshot) -> float:
+        data = s.live_bytes(address)
+        return (data[0] if data else 0) / 10.0
+    return decode
+
+
 def _live_text(address: int) -> Callable[[StateSnapshot], str]:
     def decode(s: StateSnapshot) -> str:
         data = s.live_bytes(address)
@@ -175,9 +187,10 @@ LANGUAGE_OPTIONS = ["english", "german", "french", "italian"]
 ENTITIES: list[Entity] = [
     # --- live sensors (read-only) ---
     Entity("current_pressure", "Brew Pressure", "sensor",
-           _live_byte(Address.CURRENT_PRESSURE),
+           _live_decibar(Address.CURRENT_PRESSURE),
            config={"unit_of_measurement": "bar", "device_class": "pressure",
-                   "state_class": "measurement", "icon": "mdi:gauge"}),
+                   "state_class": "measurement", "suggested_display_precision": 1,
+                   "icon": "mdi:gauge"}),
     Entity("display", "Display", "sensor",
            _live_text(Address.DISPLAY),
            config={"icon": "mdi:card-text"}),

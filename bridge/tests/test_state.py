@@ -36,6 +36,15 @@ def test_le16_little_endian():
     assert le16([0x37, 0x1B], 0) == 6967
 
 
+def test_pressure_decibar_scaled():
+    """0xB002 is decibar: raw 90 decodes to 9.0 bar, not 90."""
+    s = _snapshot()
+    s.live[Address.CURRENT_PRESSURE] = [90]
+    assert ENTITIES_BY_KEY["current_pressure"].decode(s) == 9.0
+    s.live[Address.CURRENT_PRESSURE] = [0]
+    assert ENTITIES_BY_KEY["current_pressure"].decode(s) == 0.0
+
+
 def test_decode_setpoints_and_counters():
     s = _snapshot()
     assert ENTITIES_BY_KEY["total_coffee_count"].decode(s) == 6967

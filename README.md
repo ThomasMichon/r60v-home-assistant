@@ -128,11 +128,19 @@ This project stands on earlier reverse-engineering of the R60V protocol:
   reverse-engineering (NodeJS emulator + proxy sniffing) that mapped the protocol.
 - **[confirm/Rocket-R60V](https://github.com/confirm/Rocket-R60V)** — the mature
   Python API + CLI, and the [`REVERSE_ENGINEERING.rst`](https://github.com/confirm/Rocket-R60V/blob/master/REVERSE_ENGINEERING.rst)
-  write-up. The Home Assistant integration uses this library as its transport.
+  write-up, which informed the protocol map and value encodings.
 - **[JulianKahnert/RocketAPI](https://github.com/JulianKahnert/RocketAPI)** — an
   earlier Python toolkit.
 
 Thank you to those authors — without their work this would not exist.
+
+> **On transport:** the integration and bridge do **not** depend on any of these
+> libraries at runtime. Earlier drafts wrapped `confirm/Rocket-R60V`, but the
+> current integration ships its **own** half-duplex transport and protocol codec
+> ([`custom_components/rocket_r60v/protocol.py`](custom_components/rocket_r60v/protocol.py)
+> + [`client.py`](custom_components/rocket_r60v/client.py), mirrored by the
+> bridge's [`bridge/r60v_broker`](bridge/r60v_broker)). The works above are
+> credited as **prior art**, not as dependencies.
 
 The protocol reference here was additionally cross-validated by decompiling the
 official Android app; see [`docs/protocol.md`](docs/protocol.md) for provenance.
