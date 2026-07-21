@@ -34,6 +34,8 @@ class R60VSensor(R60VEntity, SensorEntity):
         self._attr_device_class = desc.device_class
         self._attr_state_class = desc.state_class
         self._attr_icon = desc.icon
+        if desc.suggested_precision is not None:
+            self._attr_suggested_display_precision = desc.suggested_precision
 
     @property
     def native_value(self):

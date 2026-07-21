@@ -59,14 +59,22 @@ class StateSnapshot:
 # -- decode helpers ------------------------------------------------------
 
 
-def _byte(address: int) -> Callable[[StateSnapshot], int]:
-    return lambda s: s.settings_byte(address)
-
-
 def _live_byte(address: int) -> Callable[[StateSnapshot], int]:
     def decode(s: StateSnapshot) -> int:
         data = s.live_bytes(address)
         return data[0] if data else 0
+    return decode
+
+
+def _live_decibar(address: int) -> Callable[[StateSnapshot], float]:
+    """Decode a live pressure register stored in decibar (tenths of a bar).
+
+    The R60V reports pressure as a single byte in tenths of a bar (raw 90 =
+    9.0 bar). Treating the raw byte as whole bar over-reports 10x.
+    """
+    def decode(s: StateSnapshot) -> float:
+        data = s.live_bytes(address)
+        return (data[0] if data else 0) / 10.0
     return decode
 
 
@@ -105,15 +113,6 @@ def _time(hour_address: int, minute_address: int) -> Callable[[StateSnapshot], d
 
 
 # -- encode helpers ------------------------------------------------------
-
-
-def _encode_ranged(address: int, lo: int, hi: int) -> Callable[[float], tuple[int, list[int]]]:
-    def encode(value: float) -> tuple[int, list[int]]:
-        ivalue = int(round(float(value)))
-        if not lo <= ivalue <= hi:
-            raise ValueError(f"{ivalue} out of range [{lo}, {hi}] for 0x{address:02X}")
-        return address, [ivalue]
-    return encode
 
 
 def _encode_time(hour_address: int) -> Callable[[dt_time], tuple[int, list[int]]]:
@@ -175,10 +174,32 @@ class R60VEntityDescription:
     state_class: str | None = None
     options: tuple[str, ...] | None = None
     icon: str | None = None
+    #: Per-value icon overrides for selects whose icon should reflect the chosen
+    #: option (falls back to ``icon`` for options not listed).
+    icon_map: dict[str, str] | None = None
+    #: Rounding precision hint for numeric sensors (HA display precision).
+    suggested_precision: int | None = None
 
     @property
     def writable(self) -> bool:
         return self.encode is not None
+
+    def icon_for(self, value: object) -> str | None:
+        """Resolve the icon for a current value (per-value map, else base)."""
+        if self.icon_map is not None and isinstance(value, str):
+            return self.icon_map.get(value, self.icon)
+        return self.icon
+
+
+#: Per-value icons: Temperature Unit and Water Source reflect their selection.
+TEMP_UNIT_ICONS = {
+    "celsius": "mdi:temperature-celsius",
+    "fahrenheit": "mdi:temperature-fahrenheit",
+}
+WATER_FEED_ICONS = {
+    "tank": "mdi:cup-water",       # onboard reservoir
+    "mains": "mdi:pipe-valve",     # hard-plumbed to the water line
+}
 
 
 #: Every non-climate Home Assistant entity (see CLIMATE_ENTITIES for boilers).
@@ -186,9 +207,9 @@ ENTITIES: list[R60VEntityDescription] = [
     # --- sensors (read-only) ---
     R60VEntityDescription(
         "current_pressure", "Brew Pressure", "sensor",
-        _live_byte(Address.CURRENT_PRESSURE),
+        _live_decibar(Address.CURRENT_PRESSURE),
         unit="bar", device_class="pressure", state_class="measurement",
-        icon="mdi:gauge",
+        icon="mdi:gauge", suggested_precision=1,
     ),
     R60VEntityDescription(
         "display", "Display", "sensor",
@@ -227,13 +248,14 @@ ENTITIES: list[R60VEntityDescription] = [
         "water_feed", "Water Source", "select",
         _enum(Address.WATER_FEED, WATER_FEED_OPTIONS),
         _encode_enum(Address.WATER_FEED, WATER_FEED_OPTIONS),
-        options=WATER_FEED_OPTIONS, icon="mdi:water",
+        options=WATER_FEED_OPTIONS, icon="mdi:water", icon_map=WATER_FEED_ICONS,
     ),
     R60VEntityDescription(
         "temperature_unit", "Temperature Unit", "select",
         _enum(Address.TEMPERATURE_UNIT, TEMP_UNIT_OPTIONS),
         _encode_enum(Address.TEMPERATURE_UNIT, TEMP_UNIT_OPTIONS),
-        options=TEMP_UNIT_OPTIONS, icon="mdi:temperature-celsius",
+        options=TEMP_UNIT_OPTIONS, icon="mdi:thermometer",
+        icon_map=TEMP_UNIT_ICONS,
     ),
     R60VEntityDescription(
         "language", "Language", "select",
@@ -271,19 +293,70 @@ def entities_for_platform(platform: str) -> list[R60VEntityDescription]:
 class R60VClimateDescription:
     """A boiler modeled as an HA ``climate`` thermostat.
 
-    Combines a live current temperature with a writable target setpoint. The
-    device runs a fixed ``heat`` mode; on/off is the machine-wide Power switch.
+    Combines a live current temperature with a writable target setpoint. Both
+    the current temperature and the setpoint are reported by the machine in its
+    *current display unit* (reg ``0x00``: Celsius or Fahrenheit), so the entity
+    labels/ranges in that unit -- it does not assume Celsius.
+
+    The thermostat reports ``heat`` only while the boiler is actually energized
+    (``is_on``); otherwise it reports ``off``. Setting the mode drives the
+    underlying power bit (brew boiler = machine standby; steam boiler = its
+    enable), mirroring the Power / Steam Boiler switches.
     """
 
     key: str
     name: str
+    #: Live current-temperature decode (raw byte, in the machine's display unit).
     current: Callable[[StateSnapshot], object]
-    target: Callable[[StateSnapshot], object]
-    encode_target: Callable[[float], tuple[int, list[int]]]
-    min_temp: int
-    max_temp: int
+    #: Settings address of the writable setpoint (also read back for target).
+    setpoint_address: int
+    #: True while the boiler is energized (drives heat vs off).
+    is_on: Callable[[StateSnapshot], bool]
+    #: Power bit that turns this boiler on/off.
+    power_address: int
+    power_on: int
+    power_off: int
+    #: Valid setpoint range in each unit (min, max).
+    range_c: tuple[int, int]
+    range_f: tuple[int, int]
     temp_step: float = 1.0
     icon: str | None = None
+
+    def target(self, s: StateSnapshot) -> int:
+        """Decode the setpoint byte (in the machine's current display unit)."""
+        return s.settings_byte(self.setpoint_address)
+
+    def range_for(self, fahrenheit: bool) -> tuple[int, int]:
+        return self.range_f if fahrenheit else self.range_c
+
+    def encode_setpoint(self, value: float, fahrenheit: bool) -> tuple[int, list[int]]:
+        """Validate ``value`` against the active unit's range and encode a write."""
+        lo, hi = self.range_for(fahrenheit)
+        ivalue = int(round(float(value)))
+        if not lo <= ivalue <= hi:
+            unit = "F" if fahrenheit else "C"
+            raise ValueError(f"{ivalue} out of range [{lo}, {hi}] {unit}")
+        return self.setpoint_address, [ivalue]
+
+    def encode_power(self, on: bool) -> tuple[int, list[int]]:
+        return self.power_address, [self.power_on if on else self.power_off]
+
+
+def is_fahrenheit(s: StateSnapshot) -> bool:
+    """True when the machine's display unit (reg 0x00) is Fahrenheit."""
+    return s.settings_byte(Address.TEMPERATURE_UNIT) == 1
+
+
+def _brew_is_on(s: StateSnapshot) -> bool:
+    # Brew boiler is energized whenever the machine is running (not standby).
+    return s.settings_byte(Address.STANDBY) == 0
+
+
+def _steam_is_on(s: StateSnapshot) -> bool:
+    # Steam boiler is energized only when the machine runs AND steam is enabled.
+    return s.settings_byte(Address.STANDBY) == 0 and s.settings_byte(
+        Address.SERVICE_BOILER_ENABLE
+    ) != 0
 
 
 #: Boiler thermostats (current temp + setpoint) published as `climate` entities.
@@ -292,18 +365,20 @@ CLIMATE_ENTITIES: list[R60VClimateDescription] = [
     R60VClimateDescription(
         "brew_boiler", "Brew Boiler",
         _live_byte(Address.CURRENT_BREW_TEMP),
-        _byte(Address.BREW_BOILER_TEMP),
-        _encode_ranged(Address.BREW_BOILER_TEMP, *p.BREW_TEMP_RANGE_C),
-        p.BREW_TEMP_RANGE_C[0], p.BREW_TEMP_RANGE_C[1], 1,
-        icon="mdi:coffee-maker",
+        Address.BREW_BOILER_TEMP,
+        _brew_is_on,
+        Address.STANDBY, 0, 1,   # power_on = standby off, power_off = standby on
+        p.BREW_TEMP_RANGE_C, p.BREW_TEMP_RANGE_F,
+        1, icon="mdi:coffee-maker",
     ),
     R60VClimateDescription(
         "steam_boiler", "Steam Boiler",
         _live_byte(Address.CURRENT_SERVICE_TEMP),
-        _byte(Address.SERVICE_BOILER_TEMP),
-        _encode_ranged(Address.SERVICE_BOILER_TEMP, *p.SERVICE_TEMP_RANGE_C),
-        p.SERVICE_TEMP_RANGE_C[0], p.SERVICE_TEMP_RANGE_C[1], 1,
-        icon="mdi:kettle-steam",
+        Address.SERVICE_BOILER_TEMP,
+        _steam_is_on,
+        Address.SERVICE_BOILER_ENABLE, 1, 0,
+        p.SERVICE_TEMP_RANGE_C, p.SERVICE_TEMP_RANGE_F,
+        1, icon="mdi:kettle-steam",
     ),
 ]
 

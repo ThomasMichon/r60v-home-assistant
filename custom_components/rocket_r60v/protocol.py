@@ -194,3 +194,10 @@ SETTINGS_LEN = 0x73
 BREW_TEMP_RANGE_C = (85, 115)
 SERVICE_TEMP_RANGE_C = (115, 125)
 GROUP_TEMP_RANGE_C = (89, 100)
+
+#: The same ranges in Fahrenheit (the machine stores/returns temperatures in
+#: its current display unit -- reg 0x00 -- so a consumer must range-check in
+#: whichever unit is active; see docs rocket-r60v-protocol.md section 6.2/7).
+BREW_TEMP_RANGE_F = (185, 239)
+SERVICE_TEMP_RANGE_F = (239, 257)
+GROUP_TEMP_RANGE_F = (192, 212)

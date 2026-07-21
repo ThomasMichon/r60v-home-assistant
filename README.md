@@ -98,9 +98,19 @@ Add Integration → Rocket R60V**, and enter the **host**:
 
 ## Entities
 
-`switch` (standby/power), `water_heater` (brew + service boilers with setpoints
-and live temperatures), `select` (pressure profile, water source), `text`
-(pressure-profile points, auto-on / auto-off times), and `sensor` (brew time).
+- **`climate`** — Brew Boiler and Steam Boiler, each with its live temperature
+  and writable setpoint. Temperatures are reported in the machine's own display
+  unit (°C or °F, per its Temperature Unit setting); a boiler reads `heat` only
+  while it is actually energized, otherwise `off`.
+- **`switch`** — Power (machine on / standby) and Steam Boiler (enable).
+- **`select`** — Pressure Profile (A/B/C), Water Source (tank / mains),
+  Temperature Unit (°C / °F) and Language. The Temperature Unit and Water Source
+  icons reflect the current value.
+- **`time`** — Auto-On and Auto-Off timers (native time pickers).
+- **`sensor`** — Brew Pressure (bar), Display text, and Total Coffee Count.
+
+The integration also pushes Home Assistant's local time to the machine's onboard
+clock at startup and once a day, so its built-in timers stay correct across DST.
 
 ## Repository layout
 

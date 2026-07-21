@@ -30,8 +30,12 @@ class R60VSelect(R60VEntity, SelectEntity):
         # Static attributes only -- no device I/O here (runs on the event loop).
         super().__init__(coordinator, unique_id, desc.key, desc.name)
         self._desc = desc
-        self._attr_icon = desc.icon
         self._attr_options = list(desc.options or [])
+
+    @property
+    def icon(self) -> str | None:
+        """Reflect the selected value where a per-value icon map is defined."""
+        return self._desc.icon_for(self.current_option)
 
     @property
     def current_option(self) -> str | None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
@@ -10,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
 from .client import R60VClient
+from .clock import async_setup_clock_sync
 from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
 from .coordinator import R60VCoordinator
 
@@ -34,6 +36,7 @@ class R60VRuntimeData:
 
     client: R60VClient
     coordinator: R60VCoordinator
+    clock_unsub: Callable[[], None] | None = None
 
 
 type R60VConfigEntry = ConfigEntry[R60VRuntimeData]
@@ -56,6 +59,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool
 
     entry.runtime_data = R60VRuntimeData(client=client, coordinator=coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Keep the machine's onboard clock (and its built-in timers) on local time.
+    entry.runtime_data.clock_unsub = async_setup_clock_sync(hass, client)
     return True
 
 
@@ -63,6 +68,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> boo
     """Unload a config entry and close the client."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        if entry.runtime_data.clock_unsub is not None:
+            entry.runtime_data.clock_unsub()
         await entry.runtime_data.client.close()
     return unload_ok
 
