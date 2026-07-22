@@ -48,21 +48,22 @@ def test_brew_current_prefers_display() -> None:
     """The brew boiler uses the display temp when present, else the register."""
     brew = ent.CLIMATE_BY_KEY["brew_boiler"]
 
-    def snap(unit: int, reg: int, display: str) -> StateSnapshot:
+    def snap(unit: int, reg_c: int, display: str) -> StateSnapshot:
         settings = [0] * SETTINGS_LEN
         settings[Address.TEMPERATURE_UNIT] = unit
         s = StateSnapshot(settings=settings)
-        s.live[Address.CURRENT_BREW_TEMP] = [reg]
+        s.live[Address.CURRENT_BREW_TEMP] = [reg_c]   # register is Celsius
         s.live[Address.DISPLAY] = list(display.encode("ascii"))
         return s
 
-    # Machine in F, display shows the real 200F while the register is pinned at
-    # the 221F setpoint -> the display (200F=93C) wins.
-    s = snap(1, 221, "BREW BOIL. 200*F")
+    # Display shows the real 200F while the register is pinned at the 105C
+    # setpoint -> the display (200F -> 93C) wins.
+    s = snap(1, 105, "BREW BOIL. 200*F")
     assert brew.current_c(s) == round((200 - 32) / 1.8)  # 93
-    # On standby the panel shows ECO (no number) -> fall back to the register.
-    s = snap(1, 221, "BREW BOIL. ECO*")
-    assert brew.current_c(s) == round((221 - 32) / 1.8)  # 105
+    # On standby the panel shows ECO (no number) -> fall back to the register,
+    # which is already Celsius (no conversion).
+    s = snap(1, 105, "BREW BOIL. ECO*")
+    assert brew.current_c(s) == 105
 
     # The steam boiler does NOT use the display (its register reads true).
     steam = ent.CLIMATE_BY_KEY["steam_boiler"]

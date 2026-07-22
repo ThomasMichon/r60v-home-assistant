@@ -73,35 +73,35 @@ def test_climate_is_on_predicates() -> None:
     assert steam.is_on(steam_off) is False
 
 
-def test_climate_celsius_conversion_and_encode() -> None:
-    """Entity always presents Celsius: reads convert from the machine unit,
-    writes convert Celsius back to the machine unit; the setpoint range is
-    validated in Celsius."""
+def test_climate_celsius_registers_and_encode() -> None:
+    """The temperature registers are Celsius: current/target pass through
+    unchanged, writes store Celsius directly, and the range is validated in
+    Celsius. Only display-parsed text is unit-converted."""
     brew = ent.CLIMATE_BY_KEY["brew_boiler"]
 
-    # Machine in Fahrenheit (0x00 = 1): raw setpoint 221F, live 221F.
-    f_snap = _snapshot({
-        Address.TEMPERATURE_UNIT: 1,
-        Address.BREW_BOILER_TEMP: 221,
+    # Registers are Celsius (105) even when the machine's display unit is F.
+    snap = _snapshot({
+        Address.TEMPERATURE_UNIT: 1,     # display F -- must NOT affect registers
+        Address.BREW_BOILER_TEMP: 105,   # setpoint 105 C
     })
-    f_snap.live[Address.CURRENT_BREW_TEMP] = [221]
-    assert brew.target_c(f_snap) == 105          # 221F -> 105C
-    assert brew.current_c(f_snap) == 105
-    # A 105C target writes 221F to the machine (Fahrenheit unit).
-    assert brew.encode_setpoint(105, f_snap) == (Address.BREW_BOILER_TEMP, [221])
+    # No display number -> current falls back to the (Celsius) live register.
+    snap.live[Address.CURRENT_BREW_TEMP] = [105]
+    snap.live[Address.DISPLAY] = list(b"BREW BOIL. ECO*")
+    assert brew.target_c(snap) == 105        # pass-through, no conversion
+    assert brew.current_c(snap) == 105
+    # A 105 C target writes 105 to the register (no conversion).
+    assert brew.encode_setpoint(105, snap) == (Address.BREW_BOILER_TEMP, [105])
 
-    # Machine in Celsius (0x00 = 0): raw bytes are already Celsius.
-    c_snap = _snapshot({Address.TEMPERATURE_UNIT: 0, Address.BREW_BOILER_TEMP: 100})
-    c_snap.live[Address.CURRENT_BREW_TEMP] = [96]
-    assert brew.target_c(c_snap) == 100
-    assert brew.current_c(c_snap) == 96
-    assert brew.encode_setpoint(100, c_snap) == (Address.BREW_BOILER_TEMP, [100])
+    # When the panel shows a number it IS converted from its own F/C marker:
+    # "200*F" -> 93 C, preferred over the setpoint-mirroring register.
+    snap.live[Address.DISPLAY] = list(b"BREW BOIL. 200*F")
+    assert brew.current_c(snap) == round((200 - 32) / 1.8)  # 93
 
-    # Range is validated in Celsius regardless of machine unit.
+    # Range is validated in Celsius.
     with pytest.raises(ValueError):
-        brew.encode_setpoint(221, f_snap)        # 221C is absurd -> rejected
+        brew.encode_setpoint(BREW_TEMP_RANGE_C[1] + 1, snap)
     with pytest.raises(ValueError):
-        brew.encode_setpoint(BREW_TEMP_RANGE_C[1] + 1, c_snap)
+        brew.encode_setpoint(221, snap)     # 221 C is absurd -> rejected
 
 
 def test_is_fahrenheit() -> None:

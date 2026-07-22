@@ -389,14 +389,14 @@ def is_fahrenheit(s: StateSnapshot) -> bool:
     return s.settings_byte(Address.TEMPERATURE_UNIT) == 1
 
 
-def machine_to_celsius(raw: int, fahrenheit: bool) -> int:
-    """Convert a raw boiler byte (in the machine's display unit) to Celsius."""
-    return round((raw - 32) / 1.8) if fahrenheit else raw
+def machine_to_celsius(value: int, fahrenheit: bool) -> int:
+    """Convert a display-parsed temperature to Celsius.
 
-
-def celsius_to_machine(celsius: float, fahrenheit: bool) -> int:
-    """Convert a Celsius value to the machine's display unit (raw byte)."""
-    return round(celsius * 1.8 + 32) if fahrenheit else round(celsius)
+    Used for values read from the front-panel *text*, which is rendered in the
+    machine's display unit (the ``F``/``C`` marker). The numeric *registers*, by
+    contrast, are already Celsius and must NOT be passed through here.
+    """
+    return round((value - 32) / 1.8) if fahrenheit else value
 
 
 #: The R60V front panel prints the *actual* brew boiler temperature, e.g.
@@ -423,14 +423,15 @@ def parse_display_brew_temp(display: str) -> tuple[int, bool] | None:
 class R60VClimateDescription:
     """A boiler modeled as an HA ``climate`` thermostat.
 
-    The machine stores/reports both the live temperature and the setpoint in its
-    *current display unit* (reg ``0x00``: Celsius or Fahrenheit). To give Home
-    Assistant a single, self-consistent entity, this descriptor **always
-    presents Celsius**: it converts the raw byte from the machine's unit on read
-    and converts the target back to the machine's unit on write. The climate
-    entity therefore declares ``temperature_unit = CELSIUS`` and ranges in
-    Celsius, and HA converts uniformly to whatever the dashboard prefers -- so
-    the current temp, target, and min/max never disagree on units.
+    The machine stores its **temperature registers in Celsius** -- the setpoints
+    (``0x02``/``0x03``) and the live temperatures (``0xB000``/``0xB001``) are raw
+    Celsius bytes *regardless* of the machine's display-unit setting (reg
+    ``0x00``); only the front-panel *text* is rendered in the display unit
+    (e.g. ``"BREW BOIL. 221*F"`` for 105 C). So the entity declares
+    ``temperature_unit = CELSIUS`` and passes register values through unchanged;
+    Home Assistant converts to whatever the dashboard prefers (view in F to see
+    ``221``). Values parsed from the display *text* carry their own C/F marker
+    and are converted to Celsius.
 
     The thermostat reports ``heat`` only while the boiler is actually energized
     (``is_on``); otherwise it reports ``off``. Setting the mode drives the
@@ -440,9 +441,9 @@ class R60VClimateDescription:
 
     key: str
     name: str
-    #: Live current-temperature register (raw byte, in the machine's unit).
+    #: Live current-temperature register (raw Celsius byte).
     current_address: int
-    #: Settings address of the writable setpoint (raw byte, in the machine's unit).
+    #: Settings address of the writable setpoint (raw Celsius byte).
     setpoint_address: int
     #: True while the boiler is energized (drives heat vs off).
     is_on: Callable[[StateSnapshot], bool]
@@ -459,34 +460,32 @@ class R60VClimateDescription:
     display_current: bool = False
 
     def current_c(self, s: StateSnapshot) -> int:
-        """Live boiler temperature in Celsius (converted from the machine unit).
+        """Live boiler temperature in Celsius.
 
         When ``display_current`` is set, the actual temperature parsed from the
-        front-panel text is preferred over the live register (which can mirror
-        the setpoint); it falls back to the register when the panel shows no
-        number (e.g. ``ECO`` on standby).
+        front-panel text (converted from its own C/F marker) is preferred over
+        the live register, which can mirror the setpoint; it falls back to the
+        register (already Celsius) when the panel shows no number (e.g. ``ECO``
+        on standby).
         """
         if self.display_current:
             parsed = parse_display_brew_temp(_live_text(Address.DISPLAY)(s))
             if parsed is not None:
                 value, is_f = parsed
                 return machine_to_celsius(value, is_f)
-        raw = _live_byte(self.current_address)(s)
-        return machine_to_celsius(raw, is_fahrenheit(s))
+        return _live_byte(self.current_address)(s)
 
     def target_c(self, s: StateSnapshot) -> int:
-        """Setpoint in Celsius (converted from the machine unit)."""
-        raw = s.settings_byte(self.setpoint_address)
-        return machine_to_celsius(raw, is_fahrenheit(s))
+        """Setpoint in Celsius (the register is already Celsius)."""
+        return s.settings_byte(self.setpoint_address)
 
     def encode_setpoint(self, celsius: float, s: StateSnapshot) -> tuple[int, list[int]]:
-        """Validate a Celsius target and encode a write in the machine's unit."""
+        """Validate a Celsius target and write it (the register is Celsius)."""
         lo, hi = self.range_c
         cvalue = int(round(float(celsius)))
         if not lo <= cvalue <= hi:
             raise ValueError(f"{cvalue} out of range [{lo}, {hi}] C")
-        raw = celsius_to_machine(cvalue, is_fahrenheit(s))
-        return self.setpoint_address, [raw]
+        return self.setpoint_address, [cvalue]
 
     def encode_power(self, on: bool) -> tuple[int, list[int]]:
         return self.power_address, [self.power_on if on else self.power_off]
