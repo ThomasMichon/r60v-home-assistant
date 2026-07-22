@@ -52,6 +52,11 @@ class StateSnapshot:
     def settings_byte(self, address: int) -> int:
         return self.settings[address] & 0xFF if address < len(self.settings) else 0
 
+    def settings_block(self, address: int, length: int) -> list[int]:
+        """Return ``length`` settings bytes at ``address`` (zero-padded)."""
+        block = [self.settings_byte(address + i) for i in range(length)]
+        return block
+
     def live_bytes(self, address: int) -> list[int]:
         return self.live.get(address, [])
 
@@ -144,6 +149,73 @@ def _encode_enum(address: int, options: tuple[str, ...]) -> Callable[[str], tupl
     return encode
 
 
+# -- pressure-profile codec ----------------------------------------------
+# A profile block (PROFILE_A/B/C, 15 data bytes) is 5 steps of
+# (time_seconds, pressure_bar) at 0.1 precision: the first 10 bytes are 5x
+# uint16-LE deciseconds, the last 5 bytes are 5x uint8 decibar. The text
+# surface is a space-separated "seconds:bar" list, e.g. "3:3 6:6 25:9 0:9 0:6".
+
+
+def _fmt_num(value: float) -> str:
+    """Render a 0.1-precision value without a trailing '.0'."""
+    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+
+
+def decode_profile(block: list[int]) -> str:
+    """Decode a 15-byte profile block into a ``"s:bar s:bar ..."`` string."""
+    steps: list[str] = []
+    for i in range(p.PROFILE_STEPS):
+        seconds = (block[i * 2] + (block[i * 2 + 1] << 8)) / 10
+        bar = block[10 + i] / 10
+        steps.append(f"{_fmt_num(seconds)}:{_fmt_num(bar)}")
+    return " ".join(steps)
+
+
+def encode_profile(text: str) -> list[int]:
+    """Encode a ``"s:bar ..."`` string (1-5 steps) into a 15-byte block.
+
+    Missing trailing steps are zero-filled. Raises ``ValueError`` on a
+    malformed string or an out-of-range time/pressure.
+    """
+    raw = str(text).strip()
+    steps = raw.split() if raw else []
+    if not 0 <= len(steps) <= p.PROFILE_STEPS:
+        raise ValueError(f"expected 0-{p.PROFILE_STEPS} steps, got {len(steps)}")
+    t_lo_hi: list[int] = []
+    pressures: list[int] = []
+    tmin, tmax = p.PROFILE_TIMING_RANGE
+    pmin, pmax = p.PROFILE_PRESSURE_RANGE
+    for step in steps:
+        parts = step.split(":")
+        if len(parts) != 2:
+            raise ValueError(f"step {step!r} is not 'seconds:bar'")
+        try:
+            seconds = round(float(parts[0]), 1)
+            bar = round(float(parts[1]), 1)
+        except ValueError as exc:
+            raise ValueError(f"non-numeric step {step!r}") from exc
+        if not tmin <= seconds <= tmax:
+            raise ValueError(f"time {seconds} out of range [{tmin}, {tmax}] s")
+        if not pmin <= bar <= pmax:
+            raise ValueError(f"pressure {bar} out of range [{pmin}, {pmax}] bar")
+        deciseconds = int(round(seconds * 10))
+        t_lo_hi.extend((deciseconds & 0xFF, (deciseconds >> 8) & 0xFF))
+        pressures.append(int(round(bar * 10)))
+    # Zero-fill the remaining steps.
+    for _ in range(p.PROFILE_STEPS - len(steps)):
+        t_lo_hi.extend((0, 0))
+        pressures.append(0)
+    return t_lo_hi + pressures
+
+
+def _decode_profile_at(address: int) -> Callable[[StateSnapshot], str]:
+    return lambda s: decode_profile(s.settings_block(address, p.PROFILE_LEN))
+
+
+def _encode_profile_at(address: int) -> Callable[[str], tuple[int, list[int]]]:
+    return lambda text: (address, encode_profile(text))
+
+
 # -- selection option vocabularies ---------------------------------------
 
 PROFILE_OPTIONS: tuple[str, ...] = ("A", "B", "C")
@@ -179,6 +251,8 @@ class R60VEntityDescription:
     icon_map: dict[str, str] | None = None
     #: Rounding precision hint for numeric sensors (HA display precision).
     suggested_precision: int | None = None
+    #: Optional max length for text entities.
+    max_length: int | None = None
 
     @property
     def writable(self) -> bool:
@@ -277,6 +351,26 @@ ENTITIES: list[R60VEntityDescription] = [
         _time(Address.AUTO_OFF_HOUR, Address.AUTO_OFF_MINUTE),
         _encode_time(Address.AUTO_OFF_HOUR),
         icon="mdi:clock-end",
+    ),
+
+    # --- pressure profiles (editable "s:bar s:bar ..." text, 5 steps) ---
+    R60VEntityDescription(
+        "profile_a", "Pressure Profile A", "text",
+        _decode_profile_at(Address.PROFILE_A),
+        _encode_profile_at(Address.PROFILE_A),
+        icon="mdi:chart-bell-curve", max_length=64,
+    ),
+    R60VEntityDescription(
+        "profile_b", "Pressure Profile B", "text",
+        _decode_profile_at(Address.PROFILE_B),
+        _encode_profile_at(Address.PROFILE_B),
+        icon="mdi:chart-bell-curve", max_length=64,
+    ),
+    R60VEntityDescription(
+        "profile_c", "Pressure Profile C", "text",
+        _decode_profile_at(Address.PROFILE_C),
+        _encode_profile_at(Address.PROFILE_C),
+        icon="mdi:chart-bell-curve", max_length=64,
     ),
 ]
 

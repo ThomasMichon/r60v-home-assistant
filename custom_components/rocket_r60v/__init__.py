@@ -22,6 +22,7 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.SELECT,
     Platform.TIME,
+    Platform.TEXT,
     Platform.CLIMATE,
 ]
 

@@ -167,6 +167,9 @@ class Address:
     LANGUAGE = 0x01              # 0 En, 1 De, 2 Fr, 3 It
     BREW_BOILER_TEMP = 0x02      # setpoint
     SERVICE_BOILER_TEMP = 0x03   # steam boiler setpoint
+    PROFILE_A = 0x16             # pressure profile A (15-byte block)
+    PROFILE_B = 0x26             # pressure profile B (15-byte block)
+    PROFILE_C = 0x36             # pressure profile C (15-byte block)
     WATER_FEED = 0x46            # tank / mains
     ACTIVE_PROFILE = 0x47        # selects A/B/C
     SERVICE_BOILER_ENABLE = 0x49
@@ -201,3 +204,12 @@ GROUP_TEMP_RANGE_C = (89, 100)
 BREW_TEMP_RANGE_F = (185, 239)
 SERVICE_TEMP_RANGE_F = (239, 257)
 GROUP_TEMP_RANGE_F = (192, 212)
+
+#: Pressure-profile layout (blocks at PROFILE_A/B/C, 15 data bytes each).
+#: A profile is 5 steps of (time_seconds, pressure_bar), each at 0.1 precision.
+#: The 15-byte block is 5x uint16-LE deciseconds (first 10 bytes) followed by
+#: 5x uint8 decibar (last 5 bytes). See docs rocket-r60v-protocol.md section 7.
+PROFILE_LEN = 15
+PROFILE_STEPS = 5
+PROFILE_TIMING_RANGE = (0.0, 60.0)     # seconds
+PROFILE_PRESSURE_RANGE = (0.0, 10.0)   # bar

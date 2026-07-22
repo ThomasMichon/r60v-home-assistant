@@ -106,6 +106,9 @@ Add Integration → Rocket R60V**, and enter the **host**:
 - **`select`** — Pressure Profile (A/B/C), Water Source (tank / mains),
   Temperature Unit (°C / °F) and Language. The Temperature Unit and Water Source
   icons reflect the current value.
+- **`text`** — the three pressure profiles (A/B/C), editable as a
+  space-separated `seconds:bar` list of up to 5 steps
+  (e.g. `3:3 6:6 25:9 0:9 0:6`).
 - **`time`** — Auto-On and Auto-Off timers (native time pickers).
 - **`sensor`** — Brew Pressure (bar), Display text, and Total Coffee Count.
 
