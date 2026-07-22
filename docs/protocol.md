@@ -193,12 +193,21 @@ at `0x00D9`+. Field names are the app's Italian identifiers
 | `0x4B` | `COUNT_PARZ_ADDRESS` | Partial coffee counter | |
 | `0x4C` | `TEMP_SET_GRUPPO_ADDRESS` | **Group** setpoint | °C 89–100 / °F 192–212 |
 | `0x4D` | `COUNT_TOT_ADDRESS` | **Total coffee count** | |
-| `0x51` | `ORA_AUTO_ON_ADDRESS` | **Auto-on hour** | 0–23 |
-| `0x52` | `MIN_AUTO_ON_ADDRESS` | **Auto-on minute** | 0–59 |
-| `0x53` | `ORA_AUTO_OFF_ADDRESS` | **Auto-off hour** | 0–23 |
-| `0x54` | `MIN_AUTO_OFF_ADDRESS` | **Auto-off minute** | 0–59 |
-| `0x55` | `DAY_OFF` / `ENAB_PROG` | Timer weekday mask / enable | 4 bytes |
+| `0x51` | `ORA_AUTO_ON_ADDRESS` | **Auto-on hour** | 0–23, or `100` = disabled |
+| `0x52` | `MIN_AUTO_ON_ADDRESS` | **Auto-on minute** | 0–59, or `100` = disabled |
+| `0x53` | `ORA_AUTO_OFF_ADDRESS` | **Auto-off hour** | 0–23, or `100` = disabled |
+| `0x54` | `MIN_AUTO_OFF_ADDRESS` | **Auto-off minute** | 0–59, or `100` = disabled |
+| `0x55` | `DAY_OFF_ADDRESS` | **Weekly rest day** | 1 byte: 0=none, 1=Mon … 7=Sun |
 | `0x59` | `CICLI_MANUT_ADDRESS` | Maintenance cycle count | 4 bytes |
+
+> **Built-in timer enable/disable.** There is **no separate enable register**
+> (an earlier note speculated a 4-byte `ENAB_PROG` at `0x55`; the decompiled app
+> disproves it). A timer is *disabled* by writing the sentinel `100`
+> (`SHUTDOWN_VALUE`) to **both** its hour and minute byte, and *enabled* by
+> writing a valid clock time. In the official app, selecting "no automatic
+> start/stop" sets `OraAuto*` = `MinAuto*` = 100; `TimerSingleton` reads/writes
+> `0x51`–`0x55` as single bytes each. `0x55` (`DAY_OFF`) is a single-byte
+> closing-day index, not a mask.
 
 ### 6.2 Live / read-only registers (`r` only)
 

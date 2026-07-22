@@ -102,7 +102,11 @@ Add Integration → Rocket R60V**, and enter the **host**:
   and writable setpoint. Temperatures are reported in the machine's own display
   unit (°C or °F, per its Temperature Unit setting); a boiler reads `heat` only
   while it is actually energized, otherwise `off`.
-- **`switch`** — Power (machine on / standby) and Steam Boiler (enable).
+- **`switch`** — Power (machine on / standby), Steam Boiler (enable), and
+  **Auto-On Timer** / **Auto-Off Timer**, which enable or disable the machine's
+  built-in on/off timers. Turn a timer switch **off** to hand scheduling to Home
+  Assistant (see below); turning it back **on** restores its last time, which the
+  matching Auto-On / Auto-Off time picker can refine.
 - **`select`** — Pressure Profile (A/B/C), Water Source (tank / mains),
   Temperature Unit (°C / °F) and Language. The Temperature Unit and Water Source
   icons reflect the current value.
@@ -119,6 +123,44 @@ The Brew Boiler's current temperature is read from the machine's front-panel
 text when shown (the raw live register mirrors the setpoint on some units), and
 the integration pushes Home Assistant's local time to the machine's onboard
 clock at startup and once a day so its built-in timers stay correct across DST.
+
+### Letting Home Assistant own the schedule
+
+The R60V's built-in timers can only wake and sleep the machine at a single fixed
+time each day. To drive it from a Home Assistant
+[Schedule](https://www.home-assistant.io/integrations/schedule/) instead — for
+per-day times, holiday skips, or presence-aware warm-ups — first turn **off** the
+**Auto-On Timer** and **Auto-Off Timer** switches so the machine's own clock
+stops fighting Home Assistant, then let an automation toggle the **Power** switch:
+
+```yaml
+# Create a Schedule helper (e.g. schedule.espresso) covering the "on" windows,
+# then two automations that mirror it onto the Power switch.
+automation:
+  - alias: "Espresso: follow schedule on"
+    trigger:
+      - trigger: state
+        entity_id: schedule.espresso
+        to: "on"
+    action:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.rocket_r60v_power
+
+  - alias: "Espresso: follow schedule off"
+    trigger:
+      - trigger: state
+        entity_id: schedule.espresso
+        to: "off"
+    action:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.rocket_r60v_power
+```
+
+Because Home Assistant re-pushes the machine's clock on restart and daily, the
+built-in timers also stay DST-correct if you prefer to keep using them (leave the
+Auto-On / Auto-Off switches on and set the times with the time pickers).
 
 ## Repository layout
 

@@ -42,7 +42,7 @@ from r60v_broker.protocol import Address
 DOMAIN = "rocket_r60v"
 SETUP_TIMEOUT = 30
 
-# The 18 entities the integration exposes, as (platform, unique_id suffix).
+# The 20 entities the integration exposes, as (platform, unique_id suffix).
 EXPECTED_ENTITIES: list[tuple[str, str]] = [
     ("sensor", "current_pressure"),
     ("sensor", "display"),
@@ -50,6 +50,8 @@ EXPECTED_ENTITIES: list[tuple[str, str]] = [
     ("sensor", "connection"),
     ("switch", "power"),
     ("switch", "service_boiler"),
+    ("switch", "auto_on_enabled"),
+    ("switch", "auto_off_enabled"),
     ("button", "end_cooldown"),
     ("select", "active_profile"),
     ("select", "water_feed"),
@@ -98,7 +100,7 @@ async def _setup_against(hass: HomeAssistant, port: int) -> MockConfigEntry:
 async def test_all_entities_load(
     hass: HomeAssistant, emulator: R60VEmulator
 ) -> None:
-    """All 18 entities load on the right platform, available, decoded sanely."""
+    """All 20 entities load on the right platform, available, decoded sanely."""
     entry = await _setup_against(hass, emulator.bound_port)
     ent_reg = er.async_get(hass)
 

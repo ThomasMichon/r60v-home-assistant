@@ -150,6 +150,67 @@ def _encode_enum(address: int, options: tuple[str, ...]) -> Callable[[str], tupl
     return encode
 
 
+# -- built-in timer enable/disable ---------------------------------------
+# The R60V has no separate enable bit for its auto-on/auto-off timers: a timer
+# is disabled by writing TIMER_DISABLED (100) to both its hour and minute byte,
+# and enabled by writing a valid HH:MM. This backs the Auto-On/Auto-Off *switch*
+# entities (which pair with the matching Auto-On/Auto-Off *time* pickers).
+
+
+def timer_time(
+    s: StateSnapshot, hour_address: int, minute_address: int
+) -> dt_time | None:
+    """Return a timer's set time, or ``None`` when it is disabled (byte 100)."""
+    hour = s.settings_byte(hour_address)
+    minute = s.settings_byte(minute_address)
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return dt_time(hour=hour, minute=minute)
+    return None
+
+
+def encode_timer(hour_address: int, value: dt_time | None) -> tuple[int, list[int]]:
+    """Encode a built-in-timer command as a 2-byte write at the hour address.
+
+    ``value`` is a :class:`datetime.time` to *enable* the timer at that time, or
+    ``None`` to *disable* it (writes ``TIMER_DISABLED`` to hour and minute).
+    """
+    if value is None:
+        return hour_address, [p.TIMER_DISABLED, p.TIMER_DISABLED]
+    return hour_address, [value.hour, value.minute]
+
+
+@dataclass(frozen=True)
+class R60VTimerSwitchDescription:
+    """A switch enabling/disabling one of the machine's built-in timers.
+
+    :param default: the time used the first time the switch is turned on (before
+        any time has been observed or restored); the paired ``time`` picker can
+        refine it afterwards.
+    """
+
+    key: str
+    name: str
+    hour_address: int
+    minute_address: int
+    default: dt_time
+    icon: str
+
+
+#: The two built-in auto on/off timers, surfaced as enable/disable switches.
+TIMER_SWITCHES: list[R60VTimerSwitchDescription] = [
+    R60VTimerSwitchDescription(
+        "auto_on_enabled", "Auto-On Timer",
+        Address.AUTO_ON_HOUR, Address.AUTO_ON_MINUTE,
+        dt_time(hour=6, minute=0), "mdi:clock-check-outline",
+    ),
+    R60VTimerSwitchDescription(
+        "auto_off_enabled", "Auto-Off Timer",
+        Address.AUTO_OFF_HOUR, Address.AUTO_OFF_MINUTE,
+        dt_time(hour=22, minute=0), "mdi:clock-remove-outline",
+    ),
+]
+
+
 # -- pressure-profile codec ----------------------------------------------
 # A profile block (PROFILE_A/B/C, 15 data bytes) is 5 steps of
 # (time_seconds, pressure_bar) at 0.1 precision: the first 10 bytes are 5x

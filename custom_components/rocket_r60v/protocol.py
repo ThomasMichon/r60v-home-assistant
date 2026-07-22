@@ -180,6 +180,7 @@ class Address:
     AUTO_ON_MINUTE = 0x52
     AUTO_OFF_HOUR = 0x53
     AUTO_OFF_MINUTE = 0x54
+    DAY_OFF = 0x55               # weekly rest day (0 = none, 1 = Mon .. 7 = Sun)
 
     # Live / read-only registers
     DATE_TIME = 0xA000
@@ -192,6 +193,13 @@ class Address:
 #: The full settings block spans addresses 0x00..0x72 (115 bytes).
 SETTINGS_BASE = 0x0000
 SETTINGS_LEN = 0x73
+
+#: The R60V's built-in auto-on/auto-off timers have **no separate enable bit**.
+#: A timer is *disabled* by writing this sentinel to both its hour and minute
+#: byte (the official app's ``SHUTDOWN_VALUE``; picking "no automatic start/stop"
+#: sets ``OraAuto*`` = ``MinAuto*`` = 100), and *enabled* by writing a valid
+#: clock time (hour 0-23, minute 0-59). See docs/protocol.md section 6.1.
+TIMER_DISABLED = 100
 
 #: Safe write ranges (min, max) in Celsius, from the app's settings model.
 BREW_TEMP_RANGE_C = (85, 115)
