@@ -383,14 +383,33 @@ def entities_for_platform(platform: str) -> list[R60VEntityDescription]:
     return [e for e in ENTITIES if e.platform == platform]
 
 
+def is_fahrenheit(s: StateSnapshot) -> bool:
+    """True when the machine's display unit (reg 0x00) is Fahrenheit."""
+    return s.settings_byte(Address.TEMPERATURE_UNIT) == 1
+
+
+def machine_to_celsius(raw: int, fahrenheit: bool) -> int:
+    """Convert a raw boiler byte (in the machine's display unit) to Celsius."""
+    return round((raw - 32) / 1.8) if fahrenheit else raw
+
+
+def celsius_to_machine(celsius: float, fahrenheit: bool) -> int:
+    """Convert a Celsius value to the machine's display unit (raw byte)."""
+    return round(celsius * 1.8 + 32) if fahrenheit else round(celsius)
+
+
 @dataclass(frozen=True)
 class R60VClimateDescription:
     """A boiler modeled as an HA ``climate`` thermostat.
 
-    Combines a live current temperature with a writable target setpoint. Both
-    the current temperature and the setpoint are reported by the machine in its
-    *current display unit* (reg ``0x00``: Celsius or Fahrenheit), so the entity
-    labels/ranges in that unit -- it does not assume Celsius.
+    The machine stores/reports both the live temperature and the setpoint in its
+    *current display unit* (reg ``0x00``: Celsius or Fahrenheit). To give Home
+    Assistant a single, self-consistent entity, this descriptor **always
+    presents Celsius**: it converts the raw byte from the machine's unit on read
+    and converts the target back to the machine's unit on write. The climate
+    entity therefore declares ``temperature_unit = CELSIUS`` and ranges in
+    Celsius, and HA converts uniformly to whatever the dashboard prefers -- so
+    the current temp, target, and min/max never disagree on units.
 
     The thermostat reports ``heat`` only while the boiler is actually energized
     (``is_on``); otherwise it reports ``off``. Setting the mode drives the
@@ -400,9 +419,9 @@ class R60VClimateDescription:
 
     key: str
     name: str
-    #: Live current-temperature decode (raw byte, in the machine's display unit).
-    current: Callable[[StateSnapshot], object]
-    #: Settings address of the writable setpoint (also read back for target).
+    #: Live current-temperature register (raw byte, in the machine's unit).
+    current_address: int
+    #: Settings address of the writable setpoint (raw byte, in the machine's unit).
     setpoint_address: int
     #: True while the boiler is energized (drives heat vs off).
     is_on: Callable[[StateSnapshot], bool]
@@ -410,35 +429,32 @@ class R60VClimateDescription:
     power_address: int
     power_on: int
     power_off: int
-    #: Valid setpoint range in each unit (min, max).
+    #: Valid setpoint range in Celsius (min, max) -- also the entity's min/max.
     range_c: tuple[int, int]
-    range_f: tuple[int, int]
     temp_step: float = 1.0
     icon: str | None = None
 
-    def target(self, s: StateSnapshot) -> int:
-        """Decode the setpoint byte (in the machine's current display unit)."""
-        return s.settings_byte(self.setpoint_address)
+    def current_c(self, s: StateSnapshot) -> int:
+        """Live boiler temperature in Celsius (converted from the machine unit)."""
+        raw = _live_byte(self.current_address)(s)
+        return machine_to_celsius(raw, is_fahrenheit(s))
 
-    def range_for(self, fahrenheit: bool) -> tuple[int, int]:
-        return self.range_f if fahrenheit else self.range_c
+    def target_c(self, s: StateSnapshot) -> int:
+        """Setpoint in Celsius (converted from the machine unit)."""
+        raw = s.settings_byte(self.setpoint_address)
+        return machine_to_celsius(raw, is_fahrenheit(s))
 
-    def encode_setpoint(self, value: float, fahrenheit: bool) -> tuple[int, list[int]]:
-        """Validate ``value`` against the active unit's range and encode a write."""
-        lo, hi = self.range_for(fahrenheit)
-        ivalue = int(round(float(value)))
-        if not lo <= ivalue <= hi:
-            unit = "F" if fahrenheit else "C"
-            raise ValueError(f"{ivalue} out of range [{lo}, {hi}] {unit}")
-        return self.setpoint_address, [ivalue]
+    def encode_setpoint(self, celsius: float, s: StateSnapshot) -> tuple[int, list[int]]:
+        """Validate a Celsius target and encode a write in the machine's unit."""
+        lo, hi = self.range_c
+        cvalue = int(round(float(celsius)))
+        if not lo <= cvalue <= hi:
+            raise ValueError(f"{cvalue} out of range [{lo}, {hi}] C")
+        raw = celsius_to_machine(cvalue, is_fahrenheit(s))
+        return self.setpoint_address, [raw]
 
     def encode_power(self, on: bool) -> tuple[int, list[int]]:
         return self.power_address, [self.power_on if on else self.power_off]
-
-
-def is_fahrenheit(s: StateSnapshot) -> bool:
-    """True when the machine's display unit (reg 0x00) is Fahrenheit."""
-    return s.settings_byte(Address.TEMPERATURE_UNIT) == 1
 
 
 def _brew_is_on(s: StateSnapshot) -> bool:
@@ -458,20 +474,20 @@ def _steam_is_on(s: StateSnapshot) -> bool:
 CLIMATE_ENTITIES: list[R60VClimateDescription] = [
     R60VClimateDescription(
         "brew_boiler", "Brew Boiler",
-        _live_byte(Address.CURRENT_BREW_TEMP),
+        Address.CURRENT_BREW_TEMP,
         Address.BREW_BOILER_TEMP,
         _brew_is_on,
         Address.STANDBY, 0, 1,   # power_on = standby off, power_off = standby on
-        p.BREW_TEMP_RANGE_C, p.BREW_TEMP_RANGE_F,
+        p.BREW_TEMP_RANGE_C,
         1, icon="mdi:coffee-maker",
     ),
     R60VClimateDescription(
         "steam_boiler", "Steam Boiler",
-        _live_byte(Address.CURRENT_SERVICE_TEMP),
+        Address.CURRENT_SERVICE_TEMP,
         Address.SERVICE_BOILER_TEMP,
         _steam_is_on,
         Address.SERVICE_BOILER_ENABLE, 1, 0,
-        p.SERVICE_TEMP_RANGE_C, p.SERVICE_TEMP_RANGE_F,
+        p.SERVICE_TEMP_RANGE_C,
         1, icon="mdi:kettle-steam",
     ),
 ]

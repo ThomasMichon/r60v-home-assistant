@@ -19,7 +19,6 @@ from custom_components.rocket_r60v.entities import StateSnapshot
 from custom_components.rocket_r60v.protocol import (
     Address,
     BREW_TEMP_RANGE_C,
-    BREW_TEMP_RANGE_F,
     SETTINGS_LEN,
 )
 from r60v_broker.emulator import R60VEmulator
@@ -74,17 +73,35 @@ def test_climate_is_on_predicates() -> None:
     assert steam.is_on(steam_off) is False
 
 
-def test_encode_setpoint_honors_unit_range() -> None:
-    """Setpoint validation uses the range for the active display unit."""
+def test_climate_celsius_conversion_and_encode() -> None:
+    """Entity always presents Celsius: reads convert from the machine unit,
+    writes convert Celsius back to the machine unit; the setpoint range is
+    validated in Celsius."""
     brew = ent.CLIMATE_BY_KEY["brew_boiler"]
-    # Celsius: 105 valid, 221 rejected.
-    assert brew.encode_setpoint(105, fahrenheit=False) == (Address.BREW_BOILER_TEMP, [105])
+
+    # Machine in Fahrenheit (0x00 = 1): raw setpoint 221F, live 221F.
+    f_snap = _snapshot({
+        Address.TEMPERATURE_UNIT: 1,
+        Address.BREW_BOILER_TEMP: 221,
+    })
+    f_snap.live[Address.CURRENT_BREW_TEMP] = [221]
+    assert brew.target_c(f_snap) == 105          # 221F -> 105C
+    assert brew.current_c(f_snap) == 105
+    # A 105C target writes 221F to the machine (Fahrenheit unit).
+    assert brew.encode_setpoint(105, f_snap) == (Address.BREW_BOILER_TEMP, [221])
+
+    # Machine in Celsius (0x00 = 0): raw bytes are already Celsius.
+    c_snap = _snapshot({Address.TEMPERATURE_UNIT: 0, Address.BREW_BOILER_TEMP: 100})
+    c_snap.live[Address.CURRENT_BREW_TEMP] = [96]
+    assert brew.target_c(c_snap) == 100
+    assert brew.current_c(c_snap) == 96
+    assert brew.encode_setpoint(100, c_snap) == (Address.BREW_BOILER_TEMP, [100])
+
+    # Range is validated in Celsius regardless of machine unit.
     with pytest.raises(ValueError):
-        brew.encode_setpoint(BREW_TEMP_RANGE_F[1], fahrenheit=False)
-    # Fahrenheit: 221 valid, 105 rejected.
-    assert brew.encode_setpoint(221, fahrenheit=True) == (Address.BREW_BOILER_TEMP, [221])
+        brew.encode_setpoint(221, f_snap)        # 221C is absurd -> rejected
     with pytest.raises(ValueError):
-        brew.encode_setpoint(BREW_TEMP_RANGE_C[0], fahrenheit=True)
+        brew.encode_setpoint(BREW_TEMP_RANGE_C[1] + 1, c_snap)
 
 
 def test_is_fahrenheit() -> None:
