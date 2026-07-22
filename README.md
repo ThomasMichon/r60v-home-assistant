@@ -110,10 +110,15 @@ Add Integration → Rocket R60V**, and enter the **host**:
   space-separated `seconds:bar` list of up to 5 steps
   (e.g. `3:3 6:6 25:9 0:9 0:6`).
 - **`time`** — Auto-On and Auto-Off timers (native time pickers).
-- **`sensor`** — Brew Pressure (bar), Display text, and Total Coffee Count.
+- **`sensor`** — Brew Pressure (bar), Display text, Total Coffee Count, and a
+  diagnostic **Connection** status (`connected` / `reconnecting` / `cooldown`).
+- **`button`** — **End Cooldown**: if the machine's fragile listener wedges, the
+  integration backs off (a *cooldown*) so it can reset; this resumes immediately.
 
-The integration also pushes Home Assistant's local time to the machine's onboard
-clock at startup and once a day, so its built-in timers stay correct across DST.
+The Brew Boiler's current temperature is read from the machine's front-panel
+text when shown (the raw live register mirrors the setpoint on some units), and
+the integration pushes Home Assistant's local time to the machine's onboard
+clock at startup and once a day so its built-in timers stay correct across DST.
 
 ## Repository layout
 

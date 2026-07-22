@@ -18,6 +18,7 @@ settings values are little-endian.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import time as dt_time
@@ -398,6 +399,26 @@ def celsius_to_machine(celsius: float, fahrenheit: bool) -> int:
     return round(celsius * 1.8 + 32) if fahrenheit else round(celsius)
 
 
+#: The R60V front panel prints the *actual* brew boiler temperature, e.g.
+#: ``"BREW BOIL. 221*F"`` (and ``"BREW BOIL. ECO*"`` on standby, with no
+#: number). This is a more trustworthy current-temperature source than the
+#: ``0xB000`` live register, which on some units mirrors the setpoint.
+_BREW_DISPLAY_RE = re.compile(r"BREW\s*BOIL\.?\s*(\d{1,3})\s*\*?\s*([CF])", re.IGNORECASE)
+
+
+def parse_display_brew_temp(display: str) -> tuple[int, bool] | None:
+    """Parse a brew-boiler temperature off the display text.
+
+    Returns ``(value, is_fahrenheit)`` when the panel shows a numeric brew-boiler
+    temperature (e.g. ``"BREW BOIL. 221*F"`` -> ``(221, True)``), else ``None``
+    (e.g. on standby it reads ``"BREW BOIL. ECO*"`` with no number).
+    """
+    match = _BREW_DISPLAY_RE.search(display or "")
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2).upper() == "F"
+
+
 @dataclass(frozen=True)
 class R60VClimateDescription:
     """A boiler modeled as an HA ``climate`` thermostat.
@@ -433,9 +454,23 @@ class R60VClimateDescription:
     range_c: tuple[int, int]
     temp_step: float = 1.0
     icon: str | None = None
+    #: When True, prefer the actual temperature parsed from the display text
+    #: (the ``0xB000`` live register mirrors the setpoint on some units).
+    display_current: bool = False
 
     def current_c(self, s: StateSnapshot) -> int:
-        """Live boiler temperature in Celsius (converted from the machine unit)."""
+        """Live boiler temperature in Celsius (converted from the machine unit).
+
+        When ``display_current`` is set, the actual temperature parsed from the
+        front-panel text is preferred over the live register (which can mirror
+        the setpoint); it falls back to the register when the panel shows no
+        number (e.g. ``ECO`` on standby).
+        """
+        if self.display_current:
+            parsed = parse_display_brew_temp(_live_text(Address.DISPLAY)(s))
+            if parsed is not None:
+                value, is_f = parsed
+                return machine_to_celsius(value, is_f)
         raw = _live_byte(self.current_address)(s)
         return machine_to_celsius(raw, is_fahrenheit(s))
 
@@ -480,6 +515,7 @@ CLIMATE_ENTITIES: list[R60VClimateDescription] = [
         Address.STANDBY, 0, 1,   # power_on = standby off, power_off = standby on
         p.BREW_TEMP_RANGE_C,
         1, icon="mdi:coffee-maker",
+        display_current=True,   # 0xB000 mirrors the setpoint; trust the panel
     ),
     R60VClimateDescription(
         "steam_boiler", "Steam Boiler",

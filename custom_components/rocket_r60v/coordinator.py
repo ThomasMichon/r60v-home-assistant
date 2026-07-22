@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .client import R60VClient, R60VConnectionError
 from .const import DOMAIN
@@ -25,6 +26,26 @@ UPDATE_INTERVAL = timedelta(seconds=30)
 #: (> ~2.5 min at the 30s interval), which indicates a genuine outage.
 FAILURE_TOLERANCE = 5
 
+#: Backoff schedule for the "cooldown" recovery. The R60V's single-socket
+#: listener can **wedge** -- it keeps greeting but swallows every read and does
+#: NOT self-recover while a client keeps knocking. The documented escape is to
+#: stop touching it for a while so its control module resets. When failures
+#: become sustained we therefore enter a cooldown: we close the connection
+#: (freeing the machine's single client slot) and stop polling for a spell,
+#: lengthening the wait on each repeat. Range matches the observed 5-30 min
+#: recovery window.
+COOLDOWN_STEPS: tuple[timedelta, ...] = (
+    timedelta(minutes=5),
+    timedelta(minutes=10),
+    timedelta(minutes=20),
+    timedelta(minutes=30),
+)
+
+# Connection-state vocabulary (surfaced by the Connection sensor).
+STATE_CONNECTED = "connected"
+STATE_RECONNECTING = "reconnecting"
+STATE_COOLDOWN = "cooldown"
+
 
 class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
     """Polls the settings block and live registers into a StateSnapshot."""
@@ -38,6 +59,63 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         )
         self.client = client
         self._consecutive_failures = 0
+        self._cooldown_until: datetime | None = None
+        self._cooldown_index = 0
+
+    # -- cooldown state ---------------------------------------------------
+
+    @property
+    def in_cooldown(self) -> bool:
+        """True while a wedge-recovery cooldown is active."""
+        return self._cooldown_until is not None and dt_util.utcnow() < self._cooldown_until
+
+    @property
+    def cooldown_remaining(self) -> int:
+        """Seconds left in the current cooldown (0 when not cooling down)."""
+        if not self.in_cooldown:
+            return 0
+        assert self._cooldown_until is not None
+        return max(0, int((self._cooldown_until - dt_util.utcnow()).total_seconds()))
+
+    @property
+    def cooldown_ends_at(self) -> datetime | None:
+        return self._cooldown_until if self.in_cooldown else None
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
+
+    @property
+    def connection_state(self) -> str:
+        """A coarse connection status for the diagnostic sensor."""
+        if self.in_cooldown:
+            return STATE_COOLDOWN
+        if self.last_update_success:
+            return STATE_CONNECTED
+        if self._consecutive_failures > 0:
+            return STATE_RECONNECTING
+        return STATE_CONNECTED
+
+    def _enter_cooldown(self) -> None:
+        step = COOLDOWN_STEPS[min(self._cooldown_index, len(COOLDOWN_STEPS) - 1)]
+        self._cooldown_until = dt_util.utcnow() + step
+        self._cooldown_index += 1
+        LOGGER.warning(
+            "R60V appears wedged (%d consecutive failures); entering a %s cooldown "
+            "(closing the connection so its listener can reset)",
+            self._consecutive_failures, step,
+        )
+
+    async def async_end_cooldown(self) -> None:
+        """Operator override: end any cooldown now and retry immediately."""
+        if self._cooldown_until is not None:
+            LOGGER.info("cooldown override: resuming R60V polling now")
+        self._cooldown_until = None
+        self._cooldown_index = 0
+        self._consecutive_failures = 0
+        await self.async_request_refresh()
+
+    # -- polling ----------------------------------------------------------
 
     async def _read_snapshot(self) -> StateSnapshot:
         """Read a fresh settings block + live registers. Runs off the loop."""
@@ -48,14 +126,21 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         return StateSnapshot(settings=settings, live=live)
 
     async def _async_update_data(self) -> StateSnapshot:
-        """Poll the machine, tolerating transient desync by serving cached data.
+        """Poll the machine, tolerating transient desync and wedge cooldowns.
 
-        On success the failure counter resets. On a connection/protocol error we
-        serve the last-known-good snapshot (entities stay available) until the
-        failures become sustained (``FAILURE_TOLERANCE``) or we have no data yet
-        (first refresh), in which case we raise ``UpdateFailed`` -- which yields
-        ``ConfigEntryNotReady`` on the very first refresh.
+        On success the failure/cooldown state resets. A transient failure serves
+        the last-known-good snapshot (entities stay available) until failures are
+        sustained (``FAILURE_TOLERANCE``). Beyond that -- once we've loaded at
+        least once -- we treat the machine as wedged and enter a **cooldown**:
+        close the connection (free its single slot) and stop polling for a spell
+        so the listener can reset, instead of hammering it forever.
         """
+        # During cooldown, do not touch the device: keep its single slot free.
+        if self.in_cooldown:
+            if self.client.connected:
+                await self.client.close()
+            raise UpdateFailed(f"cooldown active ({self.cooldown_remaining}s remaining)")
+
         try:
             snapshot = await self._read_snapshot()
         except (R60VConnectionError, ProtocolError) as exc:
@@ -66,6 +151,15 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
                     self._consecutive_failures, FAILURE_TOLERANCE, exc,
                 )
                 return self.data
+            # Sustained failure after a prior success: assume a wedge and back
+            # off (a fresh setup still surfaces ConfigEntryNotReady instead).
+            if self.data is not None:
+                await self.client.close()
+                self._enter_cooldown()
             raise UpdateFailed(str(exc)) from exc
+
         self._consecutive_failures = 0
+        self._cooldown_until = None
+        self._cooldown_index = 0
         return snapshot
+

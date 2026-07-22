@@ -23,6 +23,7 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.TIME,
     Platform.TEXT,
+    Platform.BUTTON,
     Platform.CLIMATE,
 ]
 
