@@ -165,10 +165,34 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         """Operator override: end any cooldown now and retry immediately."""
         if self._cooldown_until is not None:
             LOGGER.info("cooldown override: resuming R60V polling now")
+        self._clear_cooldown()
+        await self.async_request_refresh()
+
+    def _clear_cooldown(self) -> None:
+        """Reset all wedge-recovery state (after a good read or an override)."""
         self._cooldown_until = None
         self._cooldown_index = 0
         self._consecutive_failures = 0
-        await self.async_request_refresh()
+
+    async def _probe_healthy(self) -> bool:
+        """Gentle control-path health probe used to exit a cooldown.
+
+        Reads **only** the settings block -- the lightest touch that proves the
+        machine's listener greets *and* answers a read. This is deliberately not
+        the full live-register sweep (`_read_snapshot`): a lighter probe is far
+        less likely to trip on a healthy-but-briefly-flaky listener, and (unlike
+        an ICMP-level reachability check) a successful read is real proof the
+        control path is back. Never raises; frees the connection slot on failure
+        so a still-wedged listener keeps its uninterrupted rest.
+        """
+        try:
+            await self.client.read(SETTINGS_BASE, SETTINGS_LEN)
+            return True
+        except (R60VConnectionError, ProtocolError) as exc:
+            LOGGER.debug("post-cooldown health probe failed: %s", exc)
+            if self.client.connected:
+                await self.client.close()
+            return False
 
     # -- polling ----------------------------------------------------------
 
@@ -188,7 +212,11 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         sustained (``FAILURE_TOLERANCE``). Beyond that -- once we've loaded at
         least once -- we treat the machine as wedged and enter a **cooldown**:
         close the connection (free its single slot) and stop polling for a spell
-        so the listener can reset, instead of hammering it forever.
+        so the listener can reset, instead of hammering it forever. When the
+        cooldown elapses we recover **gently** (a single settings read via
+        ``_probe_healthy``): resume the moment the machine answers again, and
+        keep backing off while it stays wedged -- without a full poll that could
+        itself re-wedge the listener.
         """
         # Bridge-health back-channel: if the bridge reports the link is down or
         # is actively recovering it (a diagnostic window), the machine is simply
@@ -206,11 +234,29 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
             )
             raise UpdateFailed(f"bridge link {reason}; skipping machine poll")
 
-        # During cooldown, do not touch the device: keep its single slot free.
+        # During cooldown, do not touch the device: keep its single slot free so
+        # the machine's listener gets the uninterrupted rest it needs to reset.
         if self.in_cooldown:
             if self.client.connected:
                 await self.client.close()
             raise UpdateFailed(f"cooldown active ({self.cooldown_remaining}s remaining)")
+
+        # The cooldown just elapsed. Recover GENTLY -- a single settings read,
+        # not the full live-register sweep -- so a healthy-but-briefly-flaky
+        # listener is not slammed straight back into a longer cooldown, and so a
+        # failed recovery re-escalates on a *light* touch instead of a full poll
+        # (the old behaviour, which could itself re-wedge the machine). This is
+        # the health-gated auto-recovery: the instant the machine answers again
+        # we resume; while it stays wedged we keep backing off.
+        if self._cooldown_index > 0:
+            if await self._probe_healthy():
+                LOGGER.info("R60V answered after cooldown; resuming polling")
+                self._clear_cooldown()
+                # fall through to a normal full read
+            else:
+                await self.client.close()
+                self._enter_cooldown()  # still wedged -> extend the backoff
+                raise UpdateFailed("still wedged after cooldown; extending backoff")
 
         try:
             snapshot = await self._read_snapshot()
@@ -229,8 +275,6 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
                 self._enter_cooldown()
             raise UpdateFailed(str(exc)) from exc
 
-        self._consecutive_failures = 0
-        self._cooldown_until = None
-        self._cooldown_index = 0
+        self._clear_cooldown()
         return snapshot
 

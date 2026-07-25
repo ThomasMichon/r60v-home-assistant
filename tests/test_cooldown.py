@@ -77,6 +77,16 @@ class _FakeClient:
     def __init__(self) -> None:
         self.connected = False
         self.closed = 0
+        # Toggle: when True, gentle probe / reads succeed; when False the
+        # machine is "wedged" and every read raises.
+        self.read_ok = False
+
+    async def read(self, address: int, length: int):
+        from custom_components.rocket_r60v.client import R60VConnectionError
+
+        if not self.read_ok:
+            raise R60VConnectionError("wedged")
+        return [0] * length
 
     async def close(self) -> None:
         self.connected = False
@@ -147,6 +157,62 @@ async def test_cooldown_backoff_lengthens(hass: HomeAssistant) -> None:
     second = coord.cooldown_remaining
     assert second >= first
     assert first <= COOLDOWN_STEPS[0].total_seconds()
+
+
+async def test_cooldown_recovers_gently_after_expiry(hass: HomeAssistant) -> None:
+    """When the cooldown elapses and the machine answers a gentle probe, the
+    coordinator resumes polling (health-gated auto-recovery) -- no operator
+    override needed."""
+    coord = _make_coordinator(hass)
+    coord.data = StateSnapshot()
+    coord._consecutive_failures = FAILURE_TOLERANCE + 1
+    coord._enter_cooldown()
+    assert coord.in_cooldown
+    coord._cooldown_until = None  # simulate the cooldown window elapsing
+
+    good = StateSnapshot()
+
+    async def read_snapshot_ok() -> StateSnapshot:
+        return good
+
+    coord._read_snapshot = read_snapshot_ok  # type: ignore[method-assign]
+    coord.client.read_ok = True  # the gentle probe now succeeds (machine back)
+
+    result = await coord._async_update_data()
+    assert result is good
+    assert not coord.in_cooldown
+    assert coord._cooldown_index == 0
+    assert coord._consecutive_failures == 0
+    assert coord.connection_state != "cooldown"
+
+
+async def test_cooldown_extends_gently_when_still_wedged(hass: HomeAssistant) -> None:
+    """If still wedged when the cooldown elapses, the gentle probe fails and the
+    backoff extends by one step -- WITHOUT a full poll (which could re-wedge)."""
+    from custom_components.rocket_r60v.coordinator import UpdateFailed
+
+    coord = _make_coordinator(hass)
+    coord.data = StateSnapshot()
+    coord._consecutive_failures = FAILURE_TOLERANCE + 1
+    coord._enter_cooldown()
+    idx_after_first = coord._cooldown_index
+    coord._cooldown_until = None  # elapse
+
+    snapshot_calls = {"n": 0}
+
+    async def read_snapshot_should_not_run() -> StateSnapshot:
+        snapshot_calls["n"] += 1
+        return StateSnapshot()
+
+    coord._read_snapshot = read_snapshot_should_not_run  # type: ignore[method-assign]
+    coord.client.read_ok = False  # gentle probe fails -> still wedged
+
+    with pytest.raises(UpdateFailed):
+        await coord._async_update_data()
+    assert coord.in_cooldown  # re-cooling
+    assert coord._cooldown_index == idx_after_first + 1  # escalated one step
+    assert snapshot_calls["n"] == 0  # no full poll attempted on a wedged probe
+    assert coord.client.closed >= 1
 
 
 # -- diagnostic entities (behavioral) ------------------------------------
