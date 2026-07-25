@@ -6,7 +6,11 @@
         "description": "Enter the machine's control endpoint. Connect directly to the machine's own access point at 192.168.1.1, or, if you run the bundled bridge on a host with a spare Wi-Fi radio, enter the bridge's LAN address instead.",
         "data": {
           "host": "Host",
-          "port": "Port"
+          "port": "Port",
+          "bridge_health_url": "Bridge health URL (optional)"
+        },
+        "data_description": {
+          "bridge_health_url": "If your bridge runs the companion link watchdog + health endpoint, enter its URL (e.g. http://<bridge-ip>:8787/health) so the integration can pause polling while the bridge recovers the link and surface bridge diagnostics. Leave blank to disable."
         }
       }
     },
@@ -15,6 +19,20 @@
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Rocket R60V options",
+        "description": "Configure the optional bridge-health back-channel.",
+        "data": {
+          "bridge_health_url": "Bridge health URL"
+        },
+        "data_description": {
+          "bridge_health_url": "URL of the bridge's health endpoint (e.g. http://<bridge-ip>:8787/health). Leave blank to disable the back-channel and its diagnostic sensors."
+        }
+      }
     }
   }
 }

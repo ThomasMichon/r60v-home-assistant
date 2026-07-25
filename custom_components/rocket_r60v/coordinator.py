@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .bridge_health import BridgeHealth
 from .client import R60VClient, R60VConnectionError
 from .const import DOMAIN
 from .entities import LIVE_REGISTERS, StateSnapshot
@@ -45,12 +47,27 @@ COOLDOWN_STEPS: tuple[timedelta, ...] = (
 STATE_CONNECTED = "connected"
 STATE_RECONNECTING = "reconnecting"
 STATE_COOLDOWN = "cooldown"
+# The bridge (not the machine) is the problem: the link is down, or the bridge
+# is actively recovering it (a diagnostic window). Distinct from a machine wedge
+# so the operator -- and the machine-wedge cooldown -- don't misattribute it.
+STATE_BRIDGE_DOWN = "bridge_down"
+STATE_BRIDGE_RECOVERING = "bridge_recovering"
+
+#: Health-fetcher signature: given a URL, return a parsed snapshot or None.
+HealthFetcher = Callable[[str], Awaitable[BridgeHealth | None]]
 
 
 class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
     """Polls the settings block and live registers into a StateSnapshot."""
 
-    def __init__(self, hass: HomeAssistant, client: R60VClient) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: R60VClient,
+        *,
+        bridge_health_url: str | None = None,
+        health_fetcher: HealthFetcher | None = None,
+    ) -> None:
         super().__init__(
             hass,
             LOGGER,
@@ -61,6 +78,37 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         self._consecutive_failures = 0
         self._cooldown_until: datetime | None = None
         self._cooldown_index = 0
+        # Bridge-health back-channel (optional).
+        self.bridge_health_url = bridge_health_url
+        self._health_fetcher = health_fetcher
+        self._bridge: BridgeHealth | None = None
+
+    # -- bridge-health back-channel --------------------------------------
+
+    @property
+    def bridge_health_enabled(self) -> bool:
+        """True when a bridge-health endpoint is configured."""
+        return bool(self.bridge_health_url) and self._health_fetcher is not None
+
+    @property
+    def bridge_health(self) -> BridgeHealth | None:
+        """Last-fetched bridge snapshot (None when disabled/unknown)."""
+        return self._bridge
+
+    async def _refresh_bridge_health(self) -> None:
+        """Refresh the cached bridge snapshot. Never raises."""
+        if not self.bridge_health_enabled:
+            return
+        assert self._health_fetcher is not None and self.bridge_health_url is not None
+        try:
+            self._bridge = await self._health_fetcher(self.bridge_health_url)
+        except Exception as exc:  # defensive: the back-channel must never break polling
+            LOGGER.debug("bridge health fetch failed: %s", exc)
+            self._bridge = None
+
+    def _bridge_blocking(self) -> bool:
+        """True when a fresh, usable bridge signal says to pause machine polling."""
+        return self._bridge is not None and self._bridge.blocking
 
     # -- cooldown state ---------------------------------------------------
 
@@ -88,6 +136,13 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
     @property
     def connection_state(self) -> str:
         """A coarse connection status for the diagnostic sensor."""
+        if self._bridge_blocking():
+            assert self._bridge is not None
+            return (
+                STATE_BRIDGE_RECOVERING
+                if self._bridge.diagnostic_window
+                else STATE_BRIDGE_DOWN
+            )
         if self.in_cooldown:
             return STATE_COOLDOWN
         if self.last_update_success:
@@ -135,6 +190,22 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         close the connection (free its single slot) and stop polling for a spell
         so the listener can reset, instead of hammering it forever.
         """
+        # Bridge-health back-channel: if the bridge reports the link is down or
+        # is actively recovering it (a diagnostic window), the machine is simply
+        # unreachable *through no fault of its own*. Do NOT poll (it would only
+        # hammer a half-built relay path) and do NOT count this toward the
+        # machine-wedge cooldown -- that failure mode is the machine, not the
+        # bridge. We free the client slot and surface a distinct bridge state.
+        await self._refresh_bridge_health()
+        if self._bridge_blocking():
+            assert self._bridge is not None
+            if self.client.connected:
+                await self.client.close()
+            reason = (
+                "recovering" if self._bridge.diagnostic_window else "down"
+            )
+            raise UpdateFailed(f"bridge link {reason}; skipping machine poll")
+
         # During cooldown, do not touch the device: keep its single slot free.
         if self.in_cooldown:
             if self.client.connected:

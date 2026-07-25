@@ -8,17 +8,20 @@ from dataclasses import dataclass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntry
 
+from .bridge_health import async_fetch_bridge_health
 from .client import R60VClient
 from .clock import async_setup_clock_sync
-from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
+from .const import CONF_BRIDGE_HEALTH_URL, DEFAULT_HOST, DEFAULT_PORT, DOMAIN
 from .coordinator import R60VCoordinator
 
 LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
+    Platform.BINARY_SENSOR,
     Platform.SWITCH,
     Platform.SELECT,
     Platform.TIME,
@@ -49,8 +52,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool
     host = entry.data.get(CONF_HOST, DEFAULT_HOST)
     port = entry.data.get(CONF_PORT, DEFAULT_PORT)
 
+    # Optional bridge-health back-channel (options override entry data).
+    bridge_health_url = (
+        entry.options.get(CONF_BRIDGE_HEALTH_URL)
+        or entry.data.get(CONF_BRIDGE_HEALTH_URL)
+        or None
+    )
+    health_fetcher = None
+    if bridge_health_url:
+        session = async_get_clientsession(hass)
+
+        async def _fetch(url: str):
+            return await async_fetch_bridge_health(session, url)
+
+        health_fetcher = _fetch
+
     client = R60VClient(host, port)
-    coordinator = R60VCoordinator(hass, client)
+    coordinator = R60VCoordinator(
+        hass,
+        client,
+        bridge_health_url=bridge_health_url,
+        health_fetcher=health_fetcher,
+    )
 
     try:
         # Raises ConfigEntryNotReady on failure -- never hangs the loop.
@@ -63,7 +86,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Keep the machine's onboard clock (and its built-in timers) on local time.
     entry.runtime_data.clock_unsub = async_setup_clock_sync(hass, client)
+    # Reload when options (e.g. the bridge-health URL) change.
+    entry.async_on_unload(entry.add_update_listener(_async_reload_on_update))
     return True
+
+
+async def _async_reload_on_update(
+    hass: HomeAssistant, entry: R60VConfigEntry
+) -> None:
+    """Reload the entry when its options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool:

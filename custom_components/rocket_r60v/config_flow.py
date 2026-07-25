@@ -13,10 +13,17 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
 from .client import R60VClient, R60VConnectionError
-from .const import DEFAULT_HOST, DEFAULT_PORT, DOMAIN
+from .const import (
+    CONF_BRIDGE_HEALTH_URL,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DOMAIN,
+    default_bridge_health_url,
+)
 from .protocol import SETTINGS_BASE, SETTINGS_LEN
 
 
@@ -51,8 +58,13 @@ class RocketR60VConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(f"{host}:{port}")
             self._abort_if_unique_id_configured()
             if await _can_connect(host, port):
+                # An empty bridge-health URL means "disabled" -- drop it so it
+                # doesn't linger as a falsy value in entry data.
+                data = dict(user_input)
+                if not (data.get(CONF_BRIDGE_HEALTH_URL) or "").strip():
+                    data.pop(CONF_BRIDGE_HEALTH_URL, None)
                 return self.async_create_entry(
-                    title=f"Rocket R60V ({host})", data=user_input
+                    title=f"Rocket R60V ({host})", data=data
                 )
             errors["base"] = "cannot_connect"
 
@@ -60,8 +72,41 @@ class RocketR60VConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_HOST, default=DEFAULT_HOST): str,
                 vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+                vol.Optional(CONF_BRIDGE_HEALTH_URL, default=""): str,
             }
         )
         return self.async_show_form(
             step_id="user", data_schema=schema, errors=errors
         )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "R60VOptionsFlow":
+        """Return the options flow (edit the bridge-health URL post-setup)."""
+        return R60VOptionsFlow()
+
+
+class R60VOptionsFlow(config_entries.OptionsFlow):
+    """Let the operator set/change the optional bridge-health URL."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            url = (user_input.get(CONF_BRIDGE_HEALTH_URL) or "").strip()
+            return self.async_create_entry(
+                title="", data={CONF_BRIDGE_HEALTH_URL: url}
+            )
+
+        entry = self.config_entry
+        current = (
+            entry.options.get(CONF_BRIDGE_HEALTH_URL)
+            or entry.data.get(CONF_BRIDGE_HEALTH_URL)
+            or default_bridge_health_url(entry.data.get(CONF_HOST, DEFAULT_HOST))
+        )
+        schema = vol.Schema(
+            {vol.Optional(CONF_BRIDGE_HEALTH_URL, default=current): str}
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
