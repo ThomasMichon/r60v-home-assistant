@@ -19,10 +19,12 @@ from homeassistant.data_entry_flow import FlowResult
 from .client import R60VClient, R60VConnectionError
 from .const import (
     CONF_BRIDGE_HEALTH_URL,
+    CONF_PUSH_URL,
     DEFAULT_HOST,
     DEFAULT_PORT,
     DOMAIN,
     default_bridge_health_url,
+    default_push_url,
 )
 from .protocol import SETTINGS_BASE, SETTINGS_LEN
 
@@ -63,6 +65,8 @@ class RocketR60VConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data = dict(user_input)
                 if not (data.get(CONF_BRIDGE_HEALTH_URL) or "").strip():
                     data.pop(CONF_BRIDGE_HEALTH_URL, None)
+                if not (data.get(CONF_PUSH_URL) or "").strip():
+                    data.pop(CONF_PUSH_URL, None)
                 return self.async_create_entry(
                     title=f"Rocket R60V ({host})", data=data
                 )
@@ -72,6 +76,7 @@ class RocketR60VConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_HOST, default=DEFAULT_HOST): str,
                 vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+                vol.Optional(CONF_PUSH_URL, default=""): str,
                 vol.Optional(CONF_BRIDGE_HEALTH_URL, default=""): str,
             }
         )
@@ -95,18 +100,32 @@ class R60VOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         if user_input is not None:
-            url = (user_input.get(CONF_BRIDGE_HEALTH_URL) or "").strip()
             return self.async_create_entry(
-                title="", data={CONF_BRIDGE_HEALTH_URL: url}
+                title="",
+                data={
+                    CONF_PUSH_URL: (user_input.get(CONF_PUSH_URL) or "").strip(),
+                    CONF_BRIDGE_HEALTH_URL: (
+                        user_input.get(CONF_BRIDGE_HEALTH_URL) or ""
+                    ).strip(),
+                },
             )
 
         entry = self.config_entry
-        current = (
+        host = entry.data.get(CONF_HOST, DEFAULT_HOST)
+        current_push = (
+            entry.options.get(CONF_PUSH_URL)
+            or entry.data.get(CONF_PUSH_URL)
+            or default_push_url(host)
+        )
+        current_health = (
             entry.options.get(CONF_BRIDGE_HEALTH_URL)
             or entry.data.get(CONF_BRIDGE_HEALTH_URL)
-            or default_bridge_health_url(entry.data.get(CONF_HOST, DEFAULT_HOST))
+            or default_bridge_health_url(host)
         )
         schema = vol.Schema(
-            {vol.Optional(CONF_BRIDGE_HEALTH_URL, default=current): str}
+            {
+                vol.Optional(CONF_PUSH_URL, default=current_push): str,
+                vol.Optional(CONF_BRIDGE_HEALTH_URL, default=current_health): str,
+            }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

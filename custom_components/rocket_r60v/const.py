@@ -33,3 +33,23 @@ def default_bridge_health_url(host: str, port: int = DEFAULT_BRIDGE_HEALTH_PORT)
     the control host is a sensible default; the user can override or clear it.
     """
     return f"http://{host}:{port}/health"
+
+
+# Optional WebSocket push channel.
+#
+# When the bridge runs the WebSocket push server (``R60V_PUSH_ENABLED``), the
+# integration can SUBSCRIBE to it instead of polling: the bridge fast-polls the
+# machine and streams raw state, and the integration updates its entities on
+# receipt (``iot_class: local_push``). This gives near-real-time state -- the
+# brew timer ticks live -- while the bridge remains the single disciplined owner
+# of the fragile link. Leave unset to fall back to polling (``local_polling``).
+CONF_PUSH_URL = "push_url"
+DEFAULT_PUSH_PORT = 8788
+
+
+def default_push_url(host: str, port: int = DEFAULT_PUSH_PORT) -> str:
+    """Suggest a WebSocket push URL derived from the control host.
+
+    The push server runs on the same bridge host as the control front-end.
+    """
+    return f"ws://{host}:{port}"

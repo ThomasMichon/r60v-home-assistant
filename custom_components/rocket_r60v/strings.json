@@ -7,9 +7,11 @@
         "data": {
           "host": "Host",
           "port": "Port",
+          "push_url": "WebSocket push URL (optional)",
           "bridge_health_url": "Bridge health URL (optional)"
         },
         "data_description": {
+          "push_url": "If your bridge runs the WebSocket push server, enter its URL (e.g. ws://<bridge-ip>:8788) to receive near-real-time state (local push) instead of polling. Leave blank to poll.",
           "bridge_health_url": "If your bridge runs the companion link watchdog + health endpoint, enter its URL (e.g. http://<bridge-ip>:8787/health) so the integration can pause polling while the bridge recovers the link and surface bridge diagnostics. Leave blank to disable."
         }
       }
@@ -25,11 +27,13 @@
     "step": {
       "init": {
         "title": "Rocket R60V options",
-        "description": "Configure the optional bridge-health back-channel.",
+        "description": "Configure the optional WebSocket push channel and bridge-health back-channel.",
         "data": {
+          "push_url": "WebSocket push URL",
           "bridge_health_url": "Bridge health URL"
         },
         "data_description": {
+          "push_url": "URL of the bridge's WebSocket push server (e.g. ws://<bridge-ip>:8788). When set, the integration receives near-real-time state (local push) instead of polling. Leave blank to poll.",
           "bridge_health_url": "URL of the bridge's health endpoint (e.g. http://<bridge-ip>:8787/health). Leave blank to disable the back-channel and its diagnostic sensors."
         }
       }

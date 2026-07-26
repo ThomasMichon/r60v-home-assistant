@@ -67,13 +67,19 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         *,
         bridge_health_url: str | None = None,
         health_fetcher: HealthFetcher | None = None,
+        push_enabled: bool = False,
     ) -> None:
         super().__init__(
             hass,
             LOGGER,
             name=DOMAIN,
-            update_interval=UPDATE_INTERVAL,
+            # In push mode the bridge streams state to us (via the push client
+            # calling async_set_updated_data), so we do NOT poll on a timer --
+            # the one-shot first refresh loads initial data, then the stream
+            # drives every update. Polling mode keeps the timed interval.
+            update_interval=None if push_enabled else UPDATE_INTERVAL,
         )
+        self.push_enabled = push_enabled
         self.client = client
         self._consecutive_failures = 0
         self._cooldown_until: datetime | None = None

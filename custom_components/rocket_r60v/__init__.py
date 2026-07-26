@@ -14,8 +14,15 @@ from homeassistant.helpers.device_registry import DeviceEntry
 from .bridge_health import async_fetch_bridge_health
 from .client import R60VClient
 from .clock import async_setup_clock_sync
-from .const import CONF_BRIDGE_HEALTH_URL, DEFAULT_HOST, DEFAULT_PORT, DOMAIN
+from .const import (
+    CONF_BRIDGE_HEALTH_URL,
+    CONF_PUSH_URL,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DOMAIN,
+)
 from .coordinator import R60VCoordinator
+from .push_client import R60VPushClient
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +49,7 @@ class R60VRuntimeData:
     client: R60VClient
     coordinator: R60VCoordinator
     clock_unsub: Callable[[], None] | None = None
+    push_client: R60VPushClient | None = None
 
 
 type R60VConfigEntry = ConfigEntry[R60VRuntimeData]
@@ -67,22 +75,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool
 
         health_fetcher = _fetch
 
+    # Optional WebSocket push channel (options override entry data). When set,
+    # the integration subscribes to the bridge's live stream instead of polling.
+    push_url = (
+        entry.options.get(CONF_PUSH_URL)
+        or entry.data.get(CONF_PUSH_URL)
+        or None
+    )
+
     client = R60VClient(host, port)
     coordinator = R60VCoordinator(
         hass,
         client,
         bridge_health_url=bridge_health_url,
         health_fetcher=health_fetcher,
+        push_enabled=bool(push_url),
     )
 
     try:
-        # Raises ConfigEntryNotReady on failure -- never hangs the loop.
+        # Raises ConfigEntryNotReady on failure -- never hangs the loop. In push
+        # mode this loads initial data once; the stream then drives updates.
         await coordinator.async_config_entry_first_refresh()
     except Exception:
         await client.close()
         raise
 
-    entry.runtime_data = R60VRuntimeData(client=client, coordinator=coordinator)
+    # Start the push subscriber (if configured) now that initial data is loaded.
+    push_client: R60VPushClient | None = None
+    if push_url:
+        push_client = R60VPushClient(hass, coordinator, push_url)
+        push_client.start()
+
+    entry.runtime_data = R60VRuntimeData(
+        client=client, coordinator=coordinator, push_client=push_client
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Keep the machine's onboard clock (and its built-in timers) on local time.
     entry.runtime_data.clock_unsub = async_setup_clock_sync(hass, client)
@@ -102,6 +128,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> boo
     """Unload a config entry and close the client."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        if entry.runtime_data.push_client is not None:
+            await entry.runtime_data.push_client.stop()
         if entry.runtime_data.clock_unsub is not None:
             entry.runtime_data.clock_unsub()
         await entry.runtime_data.client.close()
