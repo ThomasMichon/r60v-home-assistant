@@ -1,145 +1,96 @@
-"""The state publisher: the MQTT-facing illusion of continuity.
+"""The MQTT projection: publish the store's view to Home Assistant over MQTT.
 
-The device link is intermittent — the R60V occasionally swallows a read, and a
-reconnect takes seconds. Home Assistant, however, wants a *continuous* picture.
-This component decouples the two:
+This is a **projection** of the :class:`~r60v_broker.store.DeviceState` store,
+not an owner of state. It holds no cache or availability logic of its own: it
+reads decoded entity values from the store's cached snapshot, publishes them on
+a steady cadence, and -- by subscribing to the store's change events -- mirrors
+the store's single ``available`` verdict to MQTT the instant it flips. The store
+is the arbiter; this class only speaks MQTT.
 
-- it caches the **last-known** :class:`~r60v_broker.state.StateSnapshot` and
-  publishes every entity from that cache on a steady cadence, **regardless** of
-  whether the most recent device read succeeded — so entities never flap to
-  ``unknown`` on a transient miss;
-- it manages **availability** with a grace period: the device is only marked
-  offline after several *consecutive* failed poll cycles, and back online on the
-  first success;
-- it **interpolates** the live boiler temperatures toward their setpoints while
-  reads are stale and the machine is on — a physically-plausible estimate (a
-  regulating boiler trends to its setpoint) that keeps the graph alive instead
-  of flat-lining, until a real reading corrects it.
+(The class name is retained for compatibility; it is now the MQTT projection
+over a :class:`DeviceState`, which it creates itself when one isn't injected.)
 """
 from __future__ import annotations
 
 import logging
-import time
 
 from .config import Config
-from .protocol import Address
-from .state import CLIMATE_ENTITIES, ENTITIES, StateSnapshot
+from .state import CLIMATE_ENTITIES, ENTITIES
+from .store import DeviceState
 
 LOGGER = logging.getLogger("r60v.publisher")
 
 
 class StatePublisher:
-    """Caches machine state and publishes a continuous view to MQTT."""
+    """Publishes the store's continuous view to MQTT; mirrors availability."""
 
     def __init__(self, config: Config, mqtt, *,
+                 store: DeviceState | None = None,
                  availability_grace: int = 4, stale_after: float = 12.0,
                  interpolate_step: float = 1.0) -> None:
         self.config = config
         self.mqtt = mqtt
-        self.availability_grace = availability_grace
-        self.stale_after = stale_after
-        self.interpolate_step = interpolate_step
+        #: The single arbiter of state + availability. Injected by the broker so
+        #: MQTT and the WS push server share one store; created here when a
+        #: caller (e.g. a unit test) doesn't supply one.
+        self.store = store or DeviceState(
+            availability_grace=availability_grace,
+            stale_after=stale_after,
+            interpolate_step=interpolate_step,
+        )
+        self._last_pub_available: bool | None = None
+        # Mirror the store's availability verdict to MQTT whenever it changes.
+        self.store.subscribe(self._on_store_change)
 
-        self.snapshot = StateSnapshot()
-        self._have_data = False
-        self._fail_streak = 0
-        self._available: bool | None = None
-        self._last_live_update_at: float = 0.0
+    # -- store change -> MQTT availability --------------------------------
 
-    # -- cache updates (called by the poll loop) --------------------------
+    def _on_store_change(self) -> None:
+        available = self.store.available
+        if available != self._last_pub_available:
+            self._last_pub_available = available
+            self.mqtt.publish_availability(available)
+
+    # -- cache updates (delegate to the store) ----------------------------
 
     def update_settings(self, data: list[int]) -> None:
-        self.snapshot.settings = data
-        self._have_data = True
+        self.store.update_settings(data)
 
     def update_live(self, address: int, data: list[int]) -> None:
-        self.snapshot.live[address] = data
-        self._last_live_update_at = time.monotonic()
-        self._have_data = True
+        self.store.update_live(address, data)
 
     def note_success(self) -> None:
-        self._fail_streak = 0
-        self._set_available(True)
+        self.store.note_success()
 
     def note_failure(self) -> None:
-        self._fail_streak += 1
-        if self._fail_streak >= self.availability_grace:
-            self._set_available(False)
+        self.store.note_failure()
 
-    def _set_available(self, online: bool) -> None:
-        if self._available is online:
-            return
-        self._available = online
-        self.mqtt.publish_availability(online)
-        LOGGER.info("device marked %s", "online" if online else "offline")
+    @property
+    def snapshot(self):
+        return self.store.snapshot
 
-    # -- interpolation ----------------------------------------------------
-
-    def _interpolate_live_temps(self) -> None:
-        """Ease live boiler temps toward setpoint while stale and machine on.
-
-        Only runs when we have data, reads are stale, and the machine is on;
-        each call nudges by at most ``interpolate_step`` degrees. A real reading
-        (``update_live``) resets staleness and overrides the estimate.
-        """
-        if not self._have_data:
-            return
-        if time.monotonic() - self._last_live_update_at < self.stale_after:
-            return
-        if self.snapshot.settings_byte(Address.STANDBY) != 0:
-            return  # machine off -> temps trend to ambient, don't fabricate
-
-        self._ease(Address.CURRENT_BREW_TEMP, Address.BREW_BOILER_TEMP)
-        if self.snapshot.settings_byte(Address.SERVICE_BOILER_ENABLE):
-            self._ease(Address.CURRENT_SERVICE_TEMP, Address.SERVICE_BOILER_TEMP)
-
-    def _ease(self, live_addr: int, setpoint_addr: int) -> None:
-        data = self.snapshot.live.get(live_addr)
-        if not data:
-            return
-        current = data[0]
-        target = self.snapshot.settings_byte(setpoint_addr)
-        gap = target - current
-        if gap == 0:
-            return
-        step = max(-self.interpolate_step, min(self.interpolate_step, gap))
-        self.snapshot.live[live_addr] = [int(round(current + step))]
-
-    # -- publishing -------------------------------------------------------
+    # -- publishing (steady cadence, from the store's cache) --------------
 
     def publish(self) -> None:
-        """Publish every entity from the cached snapshot."""
-        if not self._have_data:
+        """Publish every entity from the store's cached snapshot."""
+        if not self.store.have_data:
             return
-        self._interpolate_live_temps()
+        self.store.interpolate_live_temps()
+        snap = self.store.snapshot
         for entity in ENTITIES:
             try:
-                self.mqtt.publish_state(entity.key, entity.decode(self.snapshot))
+                self.mqtt.publish_state(entity.key, entity.decode(snap))
             except Exception as exc:  # noqa: BLE001 -- one bad entity must not stop the rest
                 LOGGER.debug("failed to publish %s: %s", entity.key, exc)
         for climate in CLIMATE_ENTITIES:
             try:
                 self.mqtt.publish_climate(
                     climate.key,
-                    climate.current(self.snapshot),
-                    climate.target(self.snapshot),
+                    climate.current(snap),
+                    climate.target(snap),
                 )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("failed to publish climate %s: %s", climate.key, exc)
 
     def raw_snapshot(self) -> dict:
-        """Raw register snapshot for the WebSocket push channel.
-
-        Carries the settings block and live registers **exactly as read**, so a
-        subscriber (the ``local_push`` HA integration) can reconstruct its own
-        ``StateSnapshot`` and decode it with its own entity logic -- preserving
-        its representation unchanged. The transport moves; the decode does not.
-        """
-        available = True if self._available is None else bool(self._available)
-        return {
-            "available": available,
-            "settings": list(self.snapshot.settings),
-            "live": {
-                str(addr): list(data) for addr, data in self.snapshot.live.items()
-            },
-        }
+        """Raw register snapshot for the WebSocket push channel (from the store)."""
+        return self.store.raw_snapshot()

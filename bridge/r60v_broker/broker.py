@@ -32,6 +32,7 @@ from .mqtt_bridge import MqttBridge
 from .publisher import StatePublisher
 from .push_server import WsPushServer
 from .state import CLIMATE_BY_KEY, ENTITIES_BY_KEY, LIVE_REGISTERS
+from .store import DeviceState
 from .tcp_frontend import R60VFrontend
 
 LOGGER = logging.getLogger("r60v.broker")
@@ -58,10 +59,13 @@ class Broker:
             if self.config.push_enabled
             else None
         )
+        # The single arbiter of state + availability. The MQTT projection and
+        # the WS push server are both views of THIS store -- neither owns state.
+        self.store = DeviceState()
         # The publisher writes decoded state to the MQTT sink (used only when
         # MQTT is enabled). The WS push server is fed separately, via
         # raw_snapshot(), so enabling both never double-publishes to MQTT.
-        self.publisher = StatePublisher(self.config, self.mqtt)
+        self.publisher = StatePublisher(self.config, self.mqtt, store=self.store)
         # Optional native-protocol LAN front-end, also fronted by
         # the governor so it never opens its own upstream socket.
         self.frontend: R60VFrontend | None = (
@@ -171,29 +175,30 @@ class Broker:
                 try:
                     if resumed or tick % settings_every == 0:
                         data = await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
-                        self.publisher.update_settings(data)
+                        self.store.update_settings(data)
                     for address, length in LIVE_REGISTERS.items():
-                        self.publisher.update_live(
+                        self.store.update_live(
                             address, await self.governor.read(address, length)
                         )
-                    self.publisher.note_success()
+                    self.store.note_success()
                 except R60VConnectionError as exc:
                     # The cache keeps HA continuous; availability drops only after
                     # the grace period of consecutive failures.
                     LOGGER.warning("poll cycle failed: %s", exc)
-                    self.publisher.note_failure()
+                    self.store.note_failure()
                 except Exception:  # noqa: BLE001 -- a stray poll error must never kill the loop
                     # Defence in depth: an unexpected error in one cycle (e.g. a
                     # malformed frame that slips past the codec) must NOT unwind
                     # the gather and take the push + front-end servers down with
                     # it. Log it, count a failure, and keep polling.
                     LOGGER.exception("unexpected error in poll cycle; continuing")
-                    self.publisher.note_failure()
+                    self.store.note_failure()
                 # Push consumers get a fresh broadcast tied to the (fast) poll
-                # cadence -- near-real-time. MQTT publishing is driven separately
-                # by the steady publish loop.
+                # cadence -- near-real-time, read straight from the store (the
+                # arbiter). MQTT publishing is driven separately by the steady
+                # publish loop.
                 if self.push is not None:
-                    await self.push.broadcast(self.publisher.raw_snapshot())
+                    await self.push.broadcast(self.store.raw_snapshot())
                 tick += 1
             else:
                 idle = True
@@ -235,14 +240,14 @@ class Broker:
             # High priority: jump ahead of routine polls.
             await self.governor.write(address, data)
             # Re-read settings so HA reflects the machine's actual state.
-            self.publisher.update_settings(
+            self.store.update_settings(
                 await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
             )
-            self.publisher.note_success()
+            self.store.note_success()
             self.publisher.publish()
         except R60VConnectionError as exc:
             LOGGER.warning("failed to apply command %s: %s", key, exc)
-            self.publisher.note_failure()
+            self.store.note_failure()
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -77,7 +77,7 @@ def test_interpolation_eases_live_temp_toward_setpoint_when_stale():
     pub = StatePublisher(Config(), fake, stale_after=0.0, interpolate_step=1.0)
     pub.update_settings(_settings({Address.BREW_BOILER_TEMP: 110}))
     pub.update_live(Address.CURRENT_BREW_TEMP, [100])
-    pub._last_live_update_at = 0.0  # force staleness
+    pub.store._last_live_update_at = 0.0  # force staleness
     pub.publish()
     # 100 -> eased one step toward the 110 setpoint.
     assert fake.climate["brew_boiler"]["current"] == "101"
@@ -88,7 +88,7 @@ def test_no_interpolation_when_machine_off():
     pub = StatePublisher(Config(), fake, stale_after=0.0, interpolate_step=1.0)
     pub.update_settings(_settings({Address.BREW_BOILER_TEMP: 110, Address.STANDBY: 1}))
     pub.update_live(Address.CURRENT_BREW_TEMP, [100])
-    pub._last_live_update_at = 0.0
+    pub.store._last_live_update_at = 0.0
     pub.publish()
     # Machine off -> hold, do not fabricate movement.
     assert fake.climate["brew_boiler"]["current"] == "100"

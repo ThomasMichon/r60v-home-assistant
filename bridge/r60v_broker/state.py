@@ -156,7 +156,9 @@ def _encode_time(hour_address: int) -> Callable[[str], tuple[int, list[int]]]:
     return encode
 
 
-def _encode_bool(address: int, *, on_value: int, off_value: int) -> Callable[[str], tuple[int, list[int]]]:
+def _encode_bool(
+    address: int, *, on_value: int, off_value: int
+) -> Callable[[str], tuple[int, list[int]]]:
     def encode(payload: str) -> tuple[int, list[int]]:
         truthy = payload.strip().upper() in ("ON", "1", "TRUE")
         return address, [on_value if truthy else off_value]
