@@ -126,3 +126,20 @@ class StatePublisher:
                 )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("failed to publish climate %s: %s", climate.key, exc)
+
+    def raw_snapshot(self) -> dict:
+        """Raw register snapshot for the WebSocket push channel.
+
+        Carries the settings block and live registers **exactly as read**, so a
+        subscriber (the ``local_push`` HA integration) can reconstruct its own
+        ``StateSnapshot`` and decode it with its own entity logic -- preserving
+        its representation unchanged. The transport moves; the decode does not.
+        """
+        available = True if self._available is None else bool(self._available)
+        return {
+            "available": available,
+            "settings": list(self.snapshot.settings),
+            "live": {
+                str(addr): list(data) for addr, data in self.snapshot.live.items()
+            },
+        }

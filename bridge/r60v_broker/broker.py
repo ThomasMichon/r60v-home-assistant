@@ -30,6 +30,7 @@ from .config import Config
 from .governor import DeviceGovernor
 from .mqtt_bridge import MqttBridge
 from .publisher import StatePublisher
+from .push_server import WsPushServer
 from .state import CLIMATE_BY_KEY, ENTITIES_BY_KEY, LIVE_REGISTERS
 from .tcp_frontend import R60VFrontend
 
@@ -49,6 +50,17 @@ class Broker:
         )
         self.governor = DeviceGovernor(client)
         self.mqtt = MqttBridge(self.config, on_command=self._enqueue_command)
+        # Optional WebSocket push server: streams the cached state to LAN
+        # subscribers (a local_push HA integration). Fed by the poll loop; never
+        # touches the device.
+        self.push: WsPushServer | None = (
+            WsPushServer(self.config.push_host, self.config.push_port)
+            if self.config.push_enabled
+            else None
+        )
+        # The publisher writes decoded state to the MQTT sink (used only when
+        # MQTT is enabled). The WS push server is fed separately, via
+        # raw_snapshot(), so enabling both never double-publishes to MQTT.
         self.publisher = StatePublisher(self.config, self.mqtt)
         # Optional native-protocol LAN front-end, also fronted by
         # the governor so it never opens its own upstream socket.
@@ -80,16 +92,29 @@ class Broker:
             self.mqtt.connect()
             self.mqtt.publish_discovery(sw_version=__version__)
         else:
-            LOGGER.info("MQTT disabled (no MQTT_HOST); running front-end only")
+            LOGGER.info("MQTT disabled (no MQTT_HOST)")
         await self.governor.start()
 
-        tasks = [
-            asyncio.create_task(self._poll_loop(), name="r60v-poll"),
-            asyncio.create_task(self._command_loop(), name="r60v-commands"),
-        ]
+        tasks: list[asyncio.Task] = []
+        # The poll loop feeds the publisher cache; the publish loop emits the
+        # cached view to MQTT; the command loop routes MQTT commands into writes.
+        # A "consumer" is anything that wants that cached state -- MQTT or the WS
+        # push server. With NO consumer (front-end-only mode), running the poll
+        # loop would only add autonomous churn to the fragile device link, so it
+        # stays off and the single LAN client drives the governor on demand.
+        has_consumer = self.config.mqtt_enabled or self.push is not None
+        if has_consumer:
+            tasks.append(asyncio.create_task(self._poll_loop(), name="r60v-poll"))
         if self.config.mqtt_enabled:
             tasks.append(
+                asyncio.create_task(self._command_loop(), name="r60v-commands")
+            )
+            tasks.append(
                 asyncio.create_task(self._publish_loop(), name="r60v-publish")
+            )
+        if self.push is not None:
+            tasks.append(
+                asyncio.create_task(self.push.serve_forever(), name="r60v-push")
             )
         if self.frontend is not None:
             tasks.append(
@@ -97,6 +122,13 @@ class Broker:
                     self.frontend.serve_forever(), name="r60v-frontend"
                 )
             )
+        if not tasks:
+            LOGGER.error(
+                "no consumer enabled -- nothing to do. Set MQTT_HOST, "
+                "R60V_PUSH_ENABLED=true, or R60V_FRONTEND_ENABLED=true."
+            )
+            await self.governor.stop()
+            return
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
@@ -106,6 +138,8 @@ class Broker:
                 task.cancel()
             if self.frontend is not None:
                 await self.frontend.stop()
+            if self.push is not None:
+                await self.push.stop()
             await self.governor.stop()
             if self.config.mqtt_enabled:
                 self.mqtt.disconnect()
@@ -113,24 +147,42 @@ class Broker:
     # -- polling (feeds the cache via the governor) -----------------------
 
     async def _poll_loop(self) -> None:
-        interval = max(0.5, self.config.live_interval)
+        interval = max(0.2, self.config.live_interval)
         settings_every = max(1, round(self.config.settings_interval / interval))
         tick = 0
+        idle = True
         while True:
-            try:
-                if tick % settings_every == 0:
-                    data = await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
-                    self.publisher.update_settings(data)
-                for address, length in LIVE_REGISTERS.items():
-                    self.publisher.update_live(
-                        address, await self.governor.read(address, length)
-                    )
-                self.publisher.note_success()
-            except R60VConnectionError as exc:
-                # The cache keeps HA continuous; availability drops only after
-                # the grace period of consecutive failures.
-                LOGGER.warning("poll cycle failed: %s", exc)
-                self.publisher.note_failure()
+            # Only touch the fragile device when a consumer actually wants data:
+            # MQTT always wants continuity, but a push-only bridge polls ONLY
+            # while a subscriber is connected -- no client, no reason to poke the
+            # machine. Resuming from idle forces a fresh settings read.
+            wants_data = self.config.mqtt_enabled or (
+                self.push is not None and self.push.client_count > 0
+            )
+            if wants_data:
+                resumed, idle = idle, False
+                try:
+                    if resumed or tick % settings_every == 0:
+                        data = await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
+                        self.publisher.update_settings(data)
+                    for address, length in LIVE_REGISTERS.items():
+                        self.publisher.update_live(
+                            address, await self.governor.read(address, length)
+                        )
+                    self.publisher.note_success()
+                except R60VConnectionError as exc:
+                    # The cache keeps HA continuous; availability drops only after
+                    # the grace period of consecutive failures.
+                    LOGGER.warning("poll cycle failed: %s", exc)
+                    self.publisher.note_failure()
+                # Push consumers get a fresh broadcast tied to the (fast) poll
+                # cadence -- near-real-time. MQTT publishing is driven separately
+                # by the steady publish loop.
+                if self.push is not None:
+                    await self.push.broadcast(self.publisher.raw_snapshot())
+                tick += 1
+            else:
+                idle = True
             await asyncio.sleep(interval)
             tick += 1
 

@@ -56,6 +56,14 @@ class Config:
     frontend_host: str = "0.0.0.0"
     frontend_port: int = p.DEFAULT_PORT
 
+    # WebSocket push server. When enabled, the bridge streams the cached live
+    # state to LAN subscribers (a Home Assistant local_push integration) over
+    # WebSocket -- near-real-time without polling from HA. Fed by the governor's
+    # poll loop; never touches the device itself. OFF by default; opt-in.
+    push_enabled: bool = False
+    push_host: str = "0.0.0.0"
+    push_port: int = 8788
+
     # MQTT broker (optional). Leave mqtt_host empty to disable MQTT Discovery
     # entirely and run front-end-only. Set it to publish HA MQTT Discovery
     # entities in addition to (or instead of) the native front-end.
@@ -86,6 +94,9 @@ class Config:
             frontend_enabled=_env_bool("R60V_FRONTEND_ENABLED", True),
             frontend_host=_env("R60V_FRONTEND_HOST", "0.0.0.0"),
             frontend_port=_env_int("R60V_FRONTEND_PORT", p.DEFAULT_PORT),
+            push_enabled=_env_bool("R60V_PUSH_ENABLED", False),
+            push_host=_env("R60V_PUSH_HOST", "0.0.0.0"),
+            push_port=_env_int("R60V_PUSH_PORT", 8788),
             mqtt_host=_env("MQTT_HOST", ""),
             mqtt_port=_env_int("MQTT_PORT", 1883),
             mqtt_username=_env("MQTT_USERNAME", ""),

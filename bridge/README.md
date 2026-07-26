@@ -67,15 +67,28 @@ All configuration is via environment variables (all optional):
 | `R60V_FRONTEND_ENABLED` | `true` | Serve the native protocol on the LAN. |
 | `R60V_FRONTEND_HOST` | `0.0.0.0` | Front-end bind address. |
 | `R60V_FRONTEND_PORT` | `1774` | Front-end bind port (same as the machine, so clients need no change). |
+| `R60V_PUSH_ENABLED` | `false` | Serve the WebSocket **push** stream (near-real-time `local_push`). |
+| `R60V_PUSH_HOST` | `0.0.0.0` | Push server bind address. |
+| `R60V_PUSH_PORT` | `8788` | Push server bind port. |
 | `MQTT_HOST` | *(empty)* | Set to enable MQTT Discovery; empty = front-end only. |
 | `MQTT_PORT` | `1883` | MQTT port. |
 | `MQTT_USERNAME` / `MQTT_PASSWORD` | *(empty)* | MQTT credentials. |
-| `R60V_LIVE_INTERVAL` | `10` | Seconds between live-value polls. |
+| `R60V_LIVE_INTERVAL` | `10` | Seconds between live-value polls (set `1` for a live push feel). |
 | `R60V_SETTINGS_INTERVAL` | `60` | Seconds between full settings reads. |
 
 The bridge connects to the machine at `R60V_HOST` and exposes it at
 `R60V_FRONTEND_HOST:R60V_FRONTEND_PORT`. Point your Home Assistant integration at
 the **bridge host's LAN IP** (not `192.168.1.1`).
+
+### WebSocket push (`local_push`)
+
+Set `R60V_PUSH_ENABLED=true` (and typically `R60V_LIVE_INTERVAL=1`) to stream live
+state over WebSocket at `R60V_PUSH_HOST:R60V_PUSH_PORT` (default `:8788`). Point
+the integration's **WebSocket push URL** option at `ws://<bridge-ip>:8788` and it
+runs as a `local_push` integration -- near-real-time state (the brew timer ticks
+live) without polling. The bridge fast-polls the machine only **while a subscriber
+is connected** and streams the **raw** register snapshot; the integration
+reconstructs and decodes it, so its entities are unchanged.
 
 ## Run
 
