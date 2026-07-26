@@ -107,6 +107,30 @@ def _make_coordinator(hass: HomeAssistant):
     return coord
 
 
+async def test_connection_state_reflects_failed_update(hass: HomeAssistant) -> None:
+    """A failed update must NOT read as 'connected' -- even in push mode.
+
+    Regression (2026-07-26): in push mode a dropped stream marks the data stale
+    via async_set_update_error WITHOUT incrementing _consecutive_failures, so the
+    old fallback reported 'connected' while every machine entity was unavailable.
+    connection_state must key off last_update_success in both modes.
+    """
+    coord = _make_coordinator(hass)
+
+    # Healthy: a successful update reads as connected.
+    coord.last_update_success = True
+    assert coord.connection_state == "connected"
+
+    # Push-mode drop: update failed but the polling failure counter is untouched.
+    coord.last_update_success = False
+    coord._consecutive_failures = 0
+    assert coord.connection_state == "reconnecting"
+
+    # Polling-mode failures read as reconnecting too.
+    coord._consecutive_failures = 3
+    assert coord.connection_state == "reconnecting"
+
+
 async def test_cooldown_enters_and_overrides(hass: HomeAssistant) -> None:
     """Sustained failures after a good read trigger a cooldown; the override
     (End Cooldown) clears it."""
