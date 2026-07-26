@@ -59,10 +59,20 @@ def encode_data(data: bytes | bytearray | list[int] | None) -> str:
 
 
 def decode_data(hex_str: str) -> list[int]:
-    """Decode an even-length uppercase hex string into a list of byte values."""
+    """Decode an even-length uppercase hex string into a list of byte values.
+
+    A desync'd/garbled read yields non-hex characters here; surface that as a
+    :class:`ProtocolError` (not a raw ``ValueError``) so callers that already
+    handle protocol faults -- ``request()``'s same-socket retry, the poll loop's
+    failure path -- treat it as the transient frame corruption it is, rather than
+    letting an unhandled ``ValueError`` escape and tear down the daemon.
+    """
     if len(hex_str) % 2:
         raise ProtocolError(f"odd-length data field: {hex_str!r}")
-    return [int(hex_str[i : i + 2], 16) for i in range(0, len(hex_str), 2)]
+    try:
+        return [int(hex_str[i : i + 2], 16) for i in range(0, len(hex_str), 2)]
+    except ValueError as exc:
+        raise ProtocolError(f"non-hex data field: {hex_str!r}") from exc
 
 
 def build_envelope(command: str, address: int, length: int) -> str:

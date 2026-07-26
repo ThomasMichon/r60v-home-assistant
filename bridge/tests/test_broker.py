@@ -137,3 +137,36 @@ def test_out_of_range_command_is_rejected():
             await emu.stop()
 
     asyncio.run(scenario())
+
+
+def test_broker_run_propagates_task_crash():
+    """A crashing core task must make run() RAISE, not swallow the error.
+
+    Regression (2026-07-26): a ValueError from a garbled frame unwound the task
+    set and closed every server, but the exception was never surfaced -- the
+    process lingered alive with no listeners and systemd never restarted it.
+    run() must now propagate the crash so the process exits non-zero.
+    """
+    import pytest
+
+    async def scenario():
+        config = Config(
+            machine_host="127.0.0.1",
+            machine_port=1,
+            request_gap=0,
+            push_enabled=True,
+            push_host="127.0.0.1",
+            push_port=0,
+            frontend_enabled=False,
+        )
+        broker = Broker(config)
+
+        async def boom() -> None:
+            raise ValueError("simulated garbled-frame crash")
+
+        broker._poll_loop = boom  # type: ignore[assignment]
+
+        with pytest.raises(ValueError, match="simulated"):
+            await asyncio.wait_for(broker.run(), timeout=5)
+
+    asyncio.run(scenario())

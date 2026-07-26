@@ -54,3 +54,23 @@ def test_ack_roundtrip():
 def test_encode_decode_data_roundtrip():
     data = [0x00, 0x0F, 0xF4, 0x01, 0xFF]
     assert p.decode_data(p.encode_data(data)) == data
+
+
+def test_decode_data_rejects_non_hex_as_protocol_error():
+    # A desync'd/garbled read yields non-hex chars; it must surface as a
+    # ProtocolError (which request()/the poll loop handle), never a raw
+    # ValueError that would escape and tear down the daemon (regression: a
+    # 'rB' byte in a garbled frame crashed the broker, 2026-07-26).
+    with pytest.raises(p.ProtocolError):
+        p.decode_data("rB")
+
+
+def test_parse_frame_wraps_garbled_payload():
+    # A frame whose envelope parses but whose payload is non-hex must raise
+    # ProtocolError, not ValueError, so client.request()'s retry path handles it.
+    garbled = "r000100016942"  # read reply, non-hex payload "rB"-style bytes
+    envelope_ok = "r00010001"
+    payload = "gg"  # non-hex
+    raw = envelope_ok + payload + p.checksum(envelope_ok + payload)
+    with pytest.raises(p.ProtocolError):
+        p.parse_frame(raw)

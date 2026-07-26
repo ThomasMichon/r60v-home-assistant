@@ -133,6 +133,13 @@ class Broker:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
             LOGGER.info("broker cancelled; shutting down")
+        except Exception:
+            # A core task raised. Log the cause (previously this exception was
+            # swallowed by an un-awaited runner task, leaving the process alive
+            # but with every server torn down -- see main._run) and re-raise so
+            # the process exits non-zero and systemd restarts it.
+            LOGGER.exception("broker task crashed; shutting down for restart")
+            raise
         finally:
             for task in tasks:
                 task.cancel()
@@ -174,6 +181,13 @@ class Broker:
                     # The cache keeps HA continuous; availability drops only after
                     # the grace period of consecutive failures.
                     LOGGER.warning("poll cycle failed: %s", exc)
+                    self.publisher.note_failure()
+                except Exception:  # noqa: BLE001 -- a stray poll error must never kill the loop
+                    # Defence in depth: an unexpected error in one cycle (e.g. a
+                    # malformed frame that slips past the codec) must NOT unwind
+                    # the gather and take the push + front-end servers down with
+                    # it. Log it, count a failure, and keep polling.
+                    LOGGER.exception("unexpected error in poll cycle; continuing")
                     self.publisher.note_failure()
                 # Push consumers get a fresh broadcast tied to the (fast) poll
                 # cadence -- near-real-time. MQTT publishing is driven separately
@@ -247,7 +261,21 @@ def main(argv: list[str] | None = None) -> None:
             except (NotImplementedError, RuntimeError):
                 pass  # e.g. on platforms without signal support
         runner = asyncio.create_task(broker.run())
-        await stop.wait()
+        stopper = asyncio.create_task(stop.wait())
+        # Wait for EITHER a shutdown signal OR the broker exiting on its own.
+        # The second case is the one that bit us (2026-07-26): if any core task
+        # raised, the broker's task set unwound and every server closed, but this
+        # function only ever awaited `stop.wait()`, so the runner's exception was
+        # never retrieved -- the process lingered ALIVE with no listeners and
+        # systemd, seeing a live PID, never restarted it. Now we also watch the
+        # runner: if it finishes unprompted we re-raise its failure so the
+        # process exits non-zero and `Restart=on-failure` kicks in.
+        await asyncio.wait({runner, stopper}, return_when=asyncio.FIRST_COMPLETED)
+        stopper.cancel()
+        if runner.done():
+            runner.result()  # re-raises the crash (or returns on a clean exit)
+            return
+        # A signal arrived: cancel the broker and drain it cleanly.
         runner.cancel()
         try:
             await runner
