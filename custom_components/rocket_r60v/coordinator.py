@@ -153,9 +153,14 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
             return STATE_COOLDOWN
         if self.last_update_success:
             return STATE_CONNECTED
-        if self._consecutive_failures > 0:
-            return STATE_RECONNECTING
-        return STATE_CONNECTED
+        # Not successful -> we are reconnecting, and the diagnostic must say so.
+        # This is the case the old fallback got wrong: in PUSH mode a dropped
+        # stream marks the data stale via async_set_update_error WITHOUT ever
+        # incrementing _consecutive_failures (only the polling path does that),
+        # so `_consecutive_failures > 0` was False and the sensor reported
+        # "connected" while every machine entity was unavailable. Keyed off
+        # last_update_success, the status now reflects reality in both modes.
+        return STATE_RECONNECTING
 
     def _enter_cooldown(self) -> None:
         step = COOLDOWN_STEPS[min(self._cooldown_index, len(COOLDOWN_STEPS) - 1)]
