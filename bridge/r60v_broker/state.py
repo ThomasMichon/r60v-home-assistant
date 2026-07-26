@@ -177,7 +177,7 @@ def _encode_enum(address: int, options: list[str]) -> Callable[[str], tuple[int,
 # -- selection option vocabularies ---------------------------------------
 
 PROFILE_OPTIONS = ["A", "B", "C"]
-WATER_FEED_OPTIONS = ["tank", "mains"]
+WATER_FEED_OPTIONS = ["mains", "tank"]  # 0x46: 0=HardPlumbed(mains), 1=Reservoir(tank)
 TEMP_UNIT_OPTIONS = ["celsius", "fahrenheit"]
 LANGUAGE_OPTIONS = ["english", "german", "french", "italian"]
 

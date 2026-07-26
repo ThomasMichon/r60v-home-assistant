@@ -17,7 +17,7 @@ def _snapshot() -> StateSnapshot:
     settings[Address.STANDBY] = 0            # machine ON
     settings[Address.SERVICE_BOILER_ENABLE] = 1
     settings[Address.ACTIVE_PROFILE] = 2     # profile C
-    settings[Address.WATER_FEED] = 1         # mains
+    settings[Address.WATER_FEED] = 1         # tank (Reservoir)
     settings[Address.TEMPERATURE_UNIT] = 1   # fahrenheit
     settings[Address.AUTO_ON_HOUR] = 8
     # Total coffee count = 6967 (0x1B37), little-endian.
@@ -90,7 +90,7 @@ def test_decode_switch_and_selects():
     assert ENTITIES_BY_KEY["power"].decode(s) == "ON"          # standby 0 -> on
     assert ENTITIES_BY_KEY["service_boiler"].decode(s) == "ON"
     assert ENTITIES_BY_KEY["active_profile"].decode(s) == "C"
-    assert ENTITIES_BY_KEY["water_feed"].decode(s) == "mains"
+    assert ENTITIES_BY_KEY["water_feed"].decode(s) == "tank"
     assert ENTITIES_BY_KEY["temperature_unit"].decode(s) == "fahrenheit"
 
 

@@ -58,7 +58,7 @@ class MachineModel:
         s[Address.KI_GROUP] = 1
         s[Address.KD_COFFEE] = 65
         s[Address.KD_GROUP] = 5
-        s[Address.WATER_FEED] = 0              # reservoir/tank
+        s[Address.WATER_FEED] = 1              # Reservoir (tank); 0 = HardPlumbed (mains)
         s[Address.ACTIVE_PROFILE] = 0          # profile A
         s[Address.WAND_WASH_TIME] = 15
         s[Address.SERVICE_BOILER_ENABLE] = 1   # steam boiler on

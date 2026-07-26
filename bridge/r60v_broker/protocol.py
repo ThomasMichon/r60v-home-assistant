@@ -192,7 +192,7 @@ class Address:
     PRE_INFUSION_T_OFF = 0x2C
     PRE_INFUSION_T_ON = 0x30
     WAND_TEMP = 0x45
-    WATER_FEED = 0x46           # tank / mains
+    WATER_FEED = 0x46           # 0 = mains (HardPlumbed), 1 = tank (Reservoir)
     ACTIVE_PROFILE = 0x47       # selects A/B/C
     WAND_WASH_TIME = 0x48
     SERVICE_BOILER_ENABLE = 0x49
