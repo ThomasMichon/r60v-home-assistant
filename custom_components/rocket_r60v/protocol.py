@@ -170,7 +170,7 @@ class Address:
     PROFILE_A = 0x16             # pressure profile A (15-byte block)
     PROFILE_B = 0x26             # pressure profile B (15-byte block)
     PROFILE_C = 0x36             # pressure profile C (15-byte block)
-    WATER_FEED = 0x46            # tank / mains
+    WATER_FEED = 0x46            # 0 = mains (HardPlumbed), 1 = tank (Reservoir)
     ACTIVE_PROFILE = 0x47        # selects A/B/C
     SERVICE_BOILER_ENABLE = 0x49
     STANDBY = 0x4A               # 0 = on, 1 = standby

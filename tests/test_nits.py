@@ -59,6 +59,24 @@ def test_select_icon_reflects_value() -> None:
     assert ent.ENTITIES_BY_KEY["language"].icon_for("english") == "mdi:translate"
 
 
+def test_water_feed_byte_mapping() -> None:
+    """Water Source register 0x46 maps 0->mains, 1->tank (verified against the
+    machine + confirm/Rocket-R60V: 0=HardPlumbed, 1=Reservoir). Regression: it
+    used to be inverted, reporting a tank-fed machine as "mains"."""
+    water = ent.ENTITIES_BY_KEY["water_feed"]
+
+    def snap(byte: int) -> StateSnapshot:
+        settings = [0] * SETTINGS_LEN
+        settings[Address.WATER_FEED] = byte
+        return StateSnapshot(settings=settings)
+
+    assert water.decode(snap(0)) == "mains"
+    assert water.decode(snap(1)) == "tank"
+    # Encoding round-trips: selecting "tank" writes byte 1, "mains" writes 0.
+    assert water.encode("mains") == (Address.WATER_FEED, [0])
+    assert water.encode("tank") == (Address.WATER_FEED, [1])
+
+
 def test_climate_is_on_predicates() -> None:
     """Brew tracks standby; steam needs both machine-on and steam-enabled."""
     brew = ent.CLIMATE_BY_KEY["brew_boiler"]
@@ -204,12 +222,12 @@ async def test_select_icon_state_reflects_value(
     wf_id = ent_reg.async_get_entity_id("select", DOMAIN, _uid(entry, "water_feed"))
     coordinator = entry.runtime_data.coordinator
     try:
-        # Emulator defaults: unit=celsius (0), water=tank (0).
+        # Emulator defaults: unit=celsius (0), water=tank (byte 1 = Reservoir).
         assert hass.states.get(tu_id).attributes["icon"] == "mdi:temperature-celsius"
         assert hass.states.get(wf_id).attributes["icon"] == "mdi:cup-water"
-        # Flip to fahrenheit + mains.
+        # Flip to fahrenheit + mains (water byte 0 = HardPlumbed).
         emulator.model.settings[Address.TEMPERATURE_UNIT] = 1
-        emulator.model.settings[Address.WATER_FEED] = 1
+        emulator.model.settings[Address.WATER_FEED] = 0
         await coordinator.async_refresh()
         await hass.async_block_till_done()
         assert hass.states.get(tu_id).attributes["icon"] == "mdi:temperature-fahrenheit"

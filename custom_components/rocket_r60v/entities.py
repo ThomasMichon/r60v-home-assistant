@@ -281,7 +281,11 @@ def _encode_profile_at(address: int) -> Callable[[str], tuple[int, list[int]]]:
 # -- selection option vocabularies ---------------------------------------
 
 PROFILE_OPTIONS: tuple[str, ...] = ("A", "B", "C")
-WATER_FEED_OPTIONS: tuple[str, ...] = ("tank", "mains")
+#: Water Source (INGRESSO_ACQUA, 0x46). Order matters -- it IS the byte->label
+#: map. Verified against the machine and the reverse-engineered prior art
+#: (confirm/Rocket-R60V): byte 0 = HardPlumbed (mains), byte 1 = Reservoir (tank).
+#: (Previously ("tank", "mains"), which reported a tank-fed machine as "mains".)
+WATER_FEED_OPTIONS: tuple[str, ...] = ("mains", "tank")
 TEMP_UNIT_OPTIONS: tuple[str, ...] = ("celsius", "fahrenheit")
 LANGUAGE_OPTIONS: tuple[str, ...] = ("english", "german", "french", "italian")
 

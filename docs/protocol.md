@@ -185,7 +185,7 @@ at `0x00D9`+. Field names are the app's Italian identifiers
 | `0x2C` | `T_OFF_PRE_INF_ADDRESS` | Pre-infusion off-time | 4 bytes |
 | `0x30` | `T_ON_PRE_INF_ADDRESS` | Pre-infusion on-time | 4 bytes |
 | `0x45` | `TEMP_SET_LANCIA_ADDRESS` | Wand/lance temp | |
-| `0x46` | `INGRESSO_ACQUA` | **Water feed** source | tank / mains |
+| `0x46` | `INGRESSO_ACQUA` | **Water feed** source | `0` = mains (HardPlumbed), `1` = tank (Reservoir) |
 | `0x47` | `TIPO_TASTIERA_ADDRESS` | **Active pressure profile** | selects A/B/C |
 | `0x48` | `T_LAV_LANCIA_ADDRESS` | Wand wash time | 0–255 |
 | `0x49` | `ENAB_CALDVAP_ADDRESS` | **Service boiler enable** | bool |
