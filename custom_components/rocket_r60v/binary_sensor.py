@@ -23,16 +23,55 @@ async def async_setup_entry(
     entry: R60VConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up R60V bridge binary sensors (only when the back-channel is on)."""
+    """Set up R60V binary sensors.
+
+    The store-owned **Machine** connectivity signal is present whenever the
+    bridge push channel is in use (the store is the arbiter of machine
+    reachability). The bridge back-channel booleans are present only when the
+    bridge-health endpoint is configured.
+    """
     coordinator = entry.runtime_data.coordinator
-    if not coordinator.bridge_health_enabled:
-        return
-    async_add_entities(
-        [
-            R60VDiagnosticWindowSensor(coordinator, entry.unique_id),
-            R60VMachineReachableSensor(coordinator, entry.unique_id),
-        ]
-    )
+    entities: list = []
+    if coordinator.push_enabled:
+        entities.append(R60VMachineConnectivitySensor(coordinator, entry.unique_id))
+    if coordinator.bridge_health_enabled:
+        entities.append(R60VDiagnosticWindowSensor(coordinator, entry.unique_id))
+        entities.append(R60VMachineReachableSensor(coordinator, entry.unique_id))
+    if entities:
+        async_add_entities(entities)
+
+
+class R60VMachineConnectivitySensor(R60VEntity, BinarySensorEntity):
+    """Whether the machine's data is live, per the bridge **store** (the arbiter).
+
+    This is the integration's primary machine-liveness signal in push mode: ON
+    when the store reports the machine reachable, OFF when it does not (off or
+    wedged). It is a *distinct layer* from the bridge-health ping
+    (:class:`R60VMachineReachableSensor`) -- during a wedge the bridge can still
+    ping the machine while the store reads it as unavailable. Stays visible
+    precisely when the machine is not, so the operator can see *why* the machine
+    entities went unavailable.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_translation_key = "machine_connectivity"
+    _attr_icon = "mdi:coffee-maker"
+
+    def __init__(self, coordinator, unique_id: str) -> None:
+        super().__init__(coordinator, unique_id, "machine_connectivity", "Machine")
+
+    @property
+    def available(self) -> bool:
+        # Always visible -- it exists precisely to explain machine-off states.
+        return True
+
+    @property
+    def is_on(self) -> bool | None:
+        data = self.coordinator.data
+        if data is None:
+            return None
+        return bool(getattr(data, "available", True))
 
 
 class _R60VBridgeBinary(R60VEntity, BinarySensorEntity):

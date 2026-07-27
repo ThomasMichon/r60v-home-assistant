@@ -78,6 +78,7 @@ class R60VConnectionSensor(R60VEntity, SensorEntity):
     _attr_options = [
         "connected",
         "reconnecting",
+        "machine_unavailable",
         "cooldown",
         "bridge_down",
         "bridge_recovering",
@@ -111,6 +112,7 @@ class R60VConnectionSensor(R60VEntity, SensorEntity):
         return {
             "connected": "mdi:wifi",
             "reconnecting": "mdi:wifi-sync",
+            "machine_unavailable": "mdi:coffee-off-outline",
             "cooldown": "mdi:wifi-off",
             "bridge_down": "mdi:wifi-strength-off",
             "bridge_recovering": "mdi:wifi-sync",

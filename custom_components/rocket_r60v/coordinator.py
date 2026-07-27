@@ -47,6 +47,10 @@ COOLDOWN_STEPS: tuple[timedelta, ...] = (
 STATE_CONNECTED = "connected"
 STATE_RECONNECTING = "reconnecting"
 STATE_COOLDOWN = "cooldown"
+# The bridge transport is up but the machine itself is unreachable (the store --
+# the arbiter -- says so): distinct from a transport reconnect so the operator
+# can tell "my espresso machine is off/wedged" from "HA lost the bridge".
+STATE_MACHINE_UNAVAILABLE = "machine_unavailable"
 # The bridge (not the machine) is the problem: the link is down, or the bridge
 # is actively recovering it (a diagnostic window). Distinct from a machine wedge
 # so the operator -- and the machine-wedge cooldown -- don't misattribute it.
@@ -117,6 +121,16 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
             LOGGER.debug("bridge health fetch failed: %s", exc)
             self._bridge = None
 
+    async def async_refresh_bridge_health(self) -> None:
+        """Refresh the bridge-health snapshot and re-render the diagnostics.
+
+        Used by a periodic timer in **push mode** (where ``_async_update_data``
+        does not run on an interval), so the bridge/link diagnostics stay live
+        instead of frozen at the value fetched at setup.
+        """
+        await self._refresh_bridge_health()
+        self.async_update_listeners()
+
     def _bridge_blocking(self) -> bool:
         """True when a fresh, usable bridge signal says to pause machine polling."""
         return self._bridge is not None and self._bridge.blocking
@@ -169,12 +183,14 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
             # polling mode) -> we are reconnecting, and the diagnostic says so.
             return STATE_RECONNECTING
         # Transport is up. In push mode the store is the arbiter of machine
-        # reachability: don't claim "connected" while the machine is unavailable.
+        # reachability: surface a distinct "machine unavailable" instead of
+        # claiming "connected" (or mislabeling it as a transport reconnect) --
+        # so no signal ever reads "connected" while the machine is unavailable.
         # (`snapshot` is the coordinator's cached data, not a device handle -- no
         # I/O here.)
         snapshot = self.data
         if self.push_enabled and snapshot is not None and not snapshot.available:
-            return STATE_RECONNECTING
+            return STATE_MACHINE_UNAVAILABLE
         return STATE_CONNECTED
 
     def _enter_cooldown(self) -> None:

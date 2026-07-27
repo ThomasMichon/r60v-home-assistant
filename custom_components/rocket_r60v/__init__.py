@@ -5,11 +5,14 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from datetime import timedelta
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers.event import async_track_time_interval
 
 from .bridge_health import async_fetch_bridge_health
 from .client import R60VClient
@@ -41,6 +44,12 @@ PLATFORMS: list[Platform] = [
 #: from parallelizing writes on top of that.
 PARALLEL_UPDATES = 1
 
+#: How often to refresh the bridge-health back-channel in **push mode**. In push
+#: mode the coordinator does not poll on an interval, so the bridge/link
+#: diagnostics would otherwise freeze at their setup value; a light periodic
+#: fetch keeps them live without touching the machine.
+BRIDGE_HEALTH_REFRESH = timedelta(seconds=30)
+
 
 @dataclass
 class R60VRuntimeData:
@@ -50,6 +59,7 @@ class R60VRuntimeData:
     coordinator: R60VCoordinator
     clock_unsub: Callable[[], None] | None = None
     push_client: R60VPushClient | None = None
+    health_unsub: Callable[[], None] | None = None
 
 
 type R60VConfigEntry = ConfigEntry[R60VRuntimeData]
@@ -115,6 +125,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Keep the machine's onboard clock (and its built-in timers) on local time.
     entry.runtime_data.clock_unsub = async_setup_clock_sync(hass, client)
+    # In push mode the coordinator doesn't poll on an interval, so refresh the
+    # bridge-health diagnostics on a light timer to keep them live.
+    if push_url and coordinator.bridge_health_enabled:
+        async def _refresh_health(_now) -> None:
+            await coordinator.async_refresh_bridge_health()
+
+        entry.runtime_data.health_unsub = async_track_time_interval(
+            hass, _refresh_health, BRIDGE_HEALTH_REFRESH
+        )
     # Reload when options (e.g. the bridge-health URL) change.
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_update))
     return True
@@ -133,6 +152,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> boo
     if unload_ok:
         if entry.runtime_data.push_client is not None:
             await entry.runtime_data.push_client.stop()
+        if entry.runtime_data.health_unsub is not None:
+            entry.runtime_data.health_unsub()
         if entry.runtime_data.clock_unsub is not None:
             entry.runtime_data.clock_unsub()
         await entry.runtime_data.client.close()

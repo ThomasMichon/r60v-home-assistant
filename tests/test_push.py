@@ -86,7 +86,7 @@ def test_push_frame_unavailable_keeps_transport_up_but_machine_unavailable(
     assert coord.data is not None and coord.data.available is False
     # The Connection diagnostic must NOT claim "connected" while the machine is
     # unavailable.
-    assert coord.connection_state == "reconnecting"
+    assert coord.connection_state == "machine_unavailable"
 
 
 def test_push_client_ignores_malformed_frames(hass: HomeAssistant) -> None:
@@ -241,3 +241,60 @@ async def test_entity_availability_keys_off_store(hass: HomeAssistant) -> None:
     # Transport down -> unavailable regardless.
     coord.async_set_update_error(Exception("stream down"))
     assert entity.available is False
+
+
+# -- Phase 5: legible 3-signal health taxonomy -------------------------------
+
+
+async def test_connection_state_machine_unavailable_when_store_says_off(
+    hass: HomeAssistant,
+) -> None:
+    """Transport up + store says machine unavailable -> a distinct, legible
+    'machine_unavailable' (never 'connected', never a transport 'reconnecting')."""
+    coord = _make_coordinator(hass, push_enabled=True)
+    coord.async_set_updated_data(StateSnapshot(available=False))
+    assert coord.connection_state == "machine_unavailable"
+    coord.async_set_updated_data(StateSnapshot(available=True))
+    assert coord.connection_state == "connected"
+    # A dropped stream is a transport reconnect, distinct from machine-off.
+    coord.async_set_update_error(Exception("stream down"))
+    assert coord.connection_state == "reconnecting"
+
+
+async def test_machine_binary_sensor_reflects_store(hass: HomeAssistant) -> None:
+    """The store-owned Machine signal is always visible and tracks availability."""
+    from custom_components.rocket_r60v.binary_sensor import (
+        R60VMachineConnectivitySensor,
+    )
+
+    coord = _make_coordinator(hass, push_enabled=True)
+    sensor = R60VMachineConnectivitySensor(coord, "uid")
+    assert sensor.available is True  # visible precisely when the machine is not
+    coord.async_set_updated_data(StateSnapshot(available=True))
+    assert sensor.is_on is True
+    coord.async_set_updated_data(StateSnapshot(available=False))
+    assert sensor.is_on is False
+
+
+async def test_async_refresh_bridge_health_updates_and_notifies(
+    hass: HomeAssistant,
+) -> None:
+    """The push-mode periodic refresh updates the cached health and re-renders."""
+    from custom_components.rocket_r60v.bridge_health import BridgeHealth
+
+    async def fake_fetch(url: str) -> BridgeHealth:
+        return BridgeHealth(available=True, schema=1, link_up=True)
+
+    coord = R60VCoordinator(
+        hass,
+        _FakeClient(),
+        push_enabled=True,
+        bridge_health_url="http://bridge/health",
+        health_fetcher=fake_fetch,
+    )
+    notified: list[int] = []
+    coord.async_add_listener(lambda: notified.append(1))
+
+    await coord.async_refresh_bridge_health()
+    assert coord.bridge_health is not None and coord.bridge_health.link_up is True
+    assert notified  # diagnostics were re-rendered
