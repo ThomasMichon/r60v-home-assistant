@@ -29,3 +29,24 @@ class R60VEntity(CoordinatorEntity[R60VCoordinator]):
             model="R60V",
             name="Rocket R60V",
         )
+
+    @property
+    def available(self) -> bool:
+        """A machine entity is available only when BOTH hold:
+
+        - the transport is up (``last_update_success`` -- in push mode this is
+          the bridge stream; in polling mode it is the machine poll), and
+        - the store says the machine is reachable (``snapshot.available``).
+
+        The store (bridge) is the single arbiter of machine reachability, so a
+        machine hiccup surfaces here without the integration deciding anything
+        locally. Diagnostic entities (Connection, bridge-health) override this to
+        stay visible precisely when the machine is not.
+        """
+        if not super().available:
+            return False
+        data = self.coordinator.data
+        if data is None:
+            return False
+        return getattr(data, "available", True)
+

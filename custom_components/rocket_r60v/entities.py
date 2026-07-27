@@ -45,10 +45,18 @@ def le16(data: list[int], offset: int) -> int:
 
 @dataclass
 class StateSnapshot:
-    """A point-in-time capture of the machine's readable memory."""
+    """A point-in-time capture of the machine's readable memory.
+
+    ``available`` is the bridge store's machine-reachability verdict (push mode):
+    the store is the single arbiter of whether the machine is reachable, and
+    machine entities key their availability off this flag. It defaults to
+    ``True`` so a polling-mode snapshot (which has no bridge store and manages
+    availability via the coordinator's ``last_update_success``) is unaffected.
+    """
 
     settings: list[int] = field(default_factory=lambda: [0] * p.SETTINGS_LEN)
     live: dict[int, list[int]] = field(default_factory=dict)
+    available: bool = True
 
     def settings_byte(self, address: int) -> int:
         return self.settings[address] & 0xFF if address < len(self.settings) else 0

@@ -69,14 +69,24 @@ def test_push_frame_reconstructs_snapshot_into_coordinator(hass: HomeAssistant) 
     assert coord.last_update_success is True
 
 
-def test_push_frame_unavailable_marks_coordinator_failed(hass: HomeAssistant) -> None:
+def test_push_frame_unavailable_keeps_transport_up_but_machine_unavailable(
+    hass: HomeAssistant,
+) -> None:
+    """An `available:false` frame keeps the bridge transport 'up'
+    (last_update_success stays True) but marks the machine unavailable via the
+    snapshot -- so machine entities go unavailable while diagnostics stay live."""
     coord = _make_coordinator(hass)
     coord.async_set_updated_data(StateSnapshot())  # seed a good state
     assert coord.last_update_success is True
 
     pc = _push_client(hass, coord)
     pc._handle(json.dumps({"type": "state", "available": False, "settings": [], "live": {}}))
-    assert coord.last_update_success is False
+    # Transport is still up (frames are flowing); the machine is not reachable.
+    assert coord.last_update_success is True
+    assert coord.data is not None and coord.data.available is False
+    # The Connection diagnostic must NOT claim "connected" while the machine is
+    # unavailable.
+    assert coord.connection_state == "reconnecting"
 
 
 def test_push_client_ignores_malformed_frames(hass: HomeAssistant) -> None:
@@ -180,3 +190,54 @@ async def test_async_write_polling_mode_writes_then_refreshes(hass: HomeAssistan
     await coord.async_write(Address.BREW_BOILER_TEMP, [110])
     assert coord.client.writes == [(Address.BREW_BOILER_TEMP, [110])]
     assert calls["refresh"] == 1
+
+
+# -- Phase 4: thin push consumer + availability keyed off the store ----------
+
+
+class _ExplodingClient(_FakeClient):
+    """A client whose reads raise -- proves push mode never touches the machine."""
+
+    async def read(self, address: int, length: int):
+        raise AssertionError("push-mode coordinator must not read the machine")
+
+
+async def test_push_mode_update_data_does_no_machine_io(hass: HomeAssistant) -> None:
+    """In push mode `_async_update_data` returns a seed snapshot without any
+    machine read (the bridge streams state); it never drives the machine."""
+    coord = R60VCoordinator(hass, _ExplodingClient(), push_enabled=True)
+    snap = await coord._async_update_data()
+    assert isinstance(snap, StateSnapshot)
+    assert snap.available is False  # unavailable until the first real frame
+
+
+async def test_available_frame_marks_machine_available(hass: HomeAssistant) -> None:
+    coord = _make_coordinator(hass)
+    pc = _push_client(hass, coord)
+    settings = [0] * SETTINGS_LEN
+    settings[Address.STANDBY] = 0
+    pc._handle(json.dumps(
+        {"type": "state", "available": True, "settings": settings, "live": {}}
+    ))
+    assert coord.last_update_success is True
+    assert coord.data.available is True
+    assert coord.connection_state == "connected"
+
+
+async def test_entity_availability_keys_off_store(hass: HomeAssistant) -> None:
+    """A machine entity is available only when the transport is up AND the store
+    says the machine is reachable."""
+    from custom_components.rocket_r60v.entity import R60VEntity
+
+    coord = _make_coordinator(hass)
+    entity = R60VEntity(coord, "uid", "power", "Power")
+
+    # Machine reachable -> available.
+    coord.async_set_updated_data(StateSnapshot(available=True))
+    assert entity.available is True
+    # Machine unreachable (store) but transport up -> unavailable.
+    coord.async_set_updated_data(StateSnapshot(available=False))
+    assert entity.available is False
+    # Transport down -> unavailable regardless.
+    coord.async_set_update_error(Exception("stream down"))
+    assert entity.available is False

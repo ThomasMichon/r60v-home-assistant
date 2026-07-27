@@ -127,20 +127,22 @@ class R60VPushClient:
             backoff = min(backoff * 2, _BACKOFF_MAX)
 
     def _handle(self, raw: str) -> None:
-        """Decode one push frame and update the coordinator."""
+        """Decode one push frame and update the coordinator.
+
+        Every well-formed frame updates the coordinator's data (so
+        ``last_update_success`` reflects the **bridge transport**, which is up
+        while frames flow), carrying the store's ``available`` verdict in the
+        snapshot. Machine entities key their availability off that flag -- so a
+        machine that the bridge reports unreachable makes the *machine* entities
+        unavailable without knocking down the transport. A dropped stream is
+        handled in ``_run`` via ``async_set_update_error``.
+        """
         try:
             data = json.loads(raw)
         except ValueError:
             LOGGER.debug("ignoring non-JSON push frame")
             return
         if not isinstance(data, dict) or data.get("type") != "state":
-            return
-        if not data.get("available", True):
-            # The bridge says the machine is unreachable -- surface it as such
-            # instead of freezing on stale values.
-            self.coordinator.async_set_update_error(
-                R60VConnectionError("bridge reports machine unavailable")
-            )
             return
         settings = data.get("settings")
         if not isinstance(settings, list):
@@ -152,5 +154,9 @@ class R60VPushClient:
                 live[int(key)] = list(value)
             except (TypeError, ValueError):
                 continue
-        snapshot = StateSnapshot(settings=list(settings), live=live)
+        snapshot = StateSnapshot(
+            settings=list(settings),
+            live=live,
+            available=bool(data.get("available", True)),
+        )
         self.coordinator.async_set_updated_data(snapshot)

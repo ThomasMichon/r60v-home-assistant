@@ -146,7 +146,15 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
 
     @property
     def connection_state(self) -> str:
-        """A coarse connection status for the diagnostic sensor."""
+        """A coarse connection status for the diagnostic sensor.
+
+        In **push mode** ``last_update_success`` reflects the *bridge transport*
+        (up while frames flow), and the store decides machine reachability -- so
+        we must not report ``connected`` while the store says the machine is
+        unavailable, or we'd reintroduce the very "connected while every entity
+        is unavailable" confusion this integration exists to avoid. (Phase 5 will
+        split this into an explicit transport-vs-machine taxonomy.)
+        """
         if self._bridge_blocking():
             assert self._bridge is not None
             return (
@@ -156,16 +164,18 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
             )
         if self.in_cooldown:
             return STATE_COOLDOWN
-        if self.last_update_success:
-            return STATE_CONNECTED
-        # Not successful -> we are reconnecting, and the diagnostic must say so.
-        # This is the case the old fallback got wrong: in PUSH mode a dropped
-        # stream marks the data stale via async_set_update_error WITHOUT ever
-        # incrementing _consecutive_failures (only the polling path does that),
-        # so `_consecutive_failures > 0` was False and the sensor reported
-        # "connected" while every machine entity was unavailable. Keyed off
-        # last_update_success, the status now reflects reality in both modes.
-        return STATE_RECONNECTING
+        if not self.last_update_success:
+            # Transport down (a dropped stream in push mode; a failed poll in
+            # polling mode) -> we are reconnecting, and the diagnostic says so.
+            return STATE_RECONNECTING
+        # Transport is up. In push mode the store is the arbiter of machine
+        # reachability: don't claim "connected" while the machine is unavailable.
+        # (`snapshot` is the coordinator's cached data, not a device handle -- no
+        # I/O here.)
+        snapshot = self.data
+        if self.push_enabled and snapshot is not None and not snapshot.available:
+            return STATE_RECONNECTING
+        return STATE_CONNECTED
 
     def _enter_cooldown(self) -> None:
         step = COOLDOWN_STEPS[min(self._cooldown_index, len(COOLDOWN_STEPS) - 1)]
@@ -256,19 +266,36 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         return StateSnapshot(settings=settings, live=live)
 
     async def _async_update_data(self) -> StateSnapshot:
-        """Poll the machine, tolerating transient desync and wedge cooldowns.
+        """Fetch state. In push mode a thin consumer; in polling mode, the poller.
 
-        On success the failure/cooldown state resets. A transient failure serves
-        the last-known-good snapshot (entities stay available) until failures are
-        sustained (``FAILURE_TOLERANCE``). Beyond that -- once we've loaded at
-        least once -- we treat the machine as wedged and enter a **cooldown**:
-        close the connection (free its single slot) and stop polling for a spell
-        so the listener can reset, instead of hammering it forever. When the
-        cooldown elapses we recover **gently** (a single settings read via
-        ``_probe_healthy``): resume the moment the machine answers again, and
-        keep backing off while it stays wedged -- without a full poll that could
-        itself re-wedge the listener.
+        **Push mode (bridge streams state):** the bridge owns the whole machine
+        relationship and the store is the single arbiter of availability, so this
+        method does **no** machine I/O and carries **none** of the polling-era
+        wedge/cooldown/failure logic. It returns a seed snapshot (unavailable
+        until the first real frame); the push client then drives every update via
+        ``async_set_updated_data``. Setup therefore succeeds whenever the
+        *bridge* is reachable -- it no longer depends on the machine being on.
+
+        **Polling mode (no bridge push):** poll the machine, tolerating transient
+        desync and wedge cooldowns. On success the failure/cooldown state resets.
+        A transient failure serves the last-known-good snapshot (entities stay
+        available) until failures are sustained (``FAILURE_TOLERANCE``). Beyond
+        that -- once we've loaded at least once -- we treat the machine as wedged
+        and enter a **cooldown**: close the connection (free its single slot) and
+        stop polling for a spell so the listener can reset, instead of hammering
+        it forever. When the cooldown elapses we recover **gently** (a single
+        settings read via ``_probe_healthy``): resume the moment the machine
+        answers again, and keep backing off while it stays wedged.
         """
+        if self.push_enabled:
+            # Thin push consumer -- see docstring. No machine read, no cooldown.
+            # We still refresh the bridge-health back-channel once here (at the
+            # first refresh) so the bridge diagnostic sensors populate at setup,
+            # exactly as before; periodic refresh of those diagnostics in push
+            # mode is a Phase 5 concern (the legible health taxonomy).
+            await self._refresh_bridge_health()
+            return self.data or StateSnapshot(available=False)
+
         # Bridge-health back-channel: if the bridge reports the link is down or
         # is actively recovering it (a diagnostic window), the machine is simply
         # unreachable *through no fault of its own*. Do NOT poll (it would only
