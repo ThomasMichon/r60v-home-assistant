@@ -87,14 +87,12 @@ class R60VClimate(R60VEntity, ClimateEntity):
         if temperature is None:
             return
         address, data = self._desc.encode_setpoint(temperature, self.coordinator.data)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Drive the boiler's power bit (brew = machine standby; steam = enable)."""
         address, data = self._desc.encode_power(hvac_mode != HVACMode.OFF)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)
 
     async def async_turn_on(self) -> None:
         await self.async_set_hvac_mode(HVACMode.HEAT)

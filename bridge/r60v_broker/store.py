@@ -59,6 +59,12 @@ class DeviceState:
         self._available: bool | None = None
         self._last_live_update_at: float = 0.0
         self._listeners: list[ChangeListener] = []
+        # Optimistic write overlay: address -> byte. Holds bytes a user command
+        # has intended but the machine has not yet authoritatively confirmed, so
+        # HA reflects the intent at once. Re-applied on top of every
+        # authoritative settings read (so a stale poll can't clobber it) and
+        # cleared per-command once that command's write has been reconciled.
+        self._pending: dict[int, int] = {}
 
     # -- subscription -----------------------------------------------------
 
@@ -100,6 +106,9 @@ class DeviceState:
 
     def update_settings(self, data: list[int]) -> None:
         self.snapshot.settings = data
+        # Re-apply any in-flight optimistic bytes on top of the authoritative
+        # read, so a poll that started before a command cannot revert its value.
+        self._apply_pending()
         self._have_data = True
         self._notify()
 
@@ -124,6 +133,53 @@ class DeviceState:
         self._available = online
         LOGGER.info("device marked %s", "online" if online else "offline")
         self._notify()
+
+    # -- optimistic write overlay -----------------------------------------
+
+    def apply_optimistic(self, address: int, data: list[int]) -> bool:
+        """Optimistically reflect a user write before the machine confirms it.
+
+        Records the intended bytes in the pending overlay and patches the cached
+        settings block so HA sees the value immediately. Only settings-block
+        writes are reflected (every writable entity lives at ``0x00..0x72``); a
+        write outside the block, before any baseline read, or with an
+        out-of-range byte is not reflected (it still goes to the machine and
+        surfaces on the next authoritative read). Availability is untouched -- an
+        intent is not a reading. Returns whether the overlay was applied.
+        """
+        if not self._have_data:
+            return False
+        if address < 0 or not data:
+            return False
+        if address + len(data) > len(self.snapshot.settings):
+            return False
+        if any(b < 0 or b > 0xFF for b in data):
+            return False
+        for offset, byte in enumerate(data):
+            self._pending[address + offset] = byte
+        self._apply_pending()
+        self._notify()
+        return True
+
+    def reconcile_clear(self, expected: dict[int, int]) -> None:
+        """Drop overlay bytes a command has finished reconciling.
+
+        ``expected`` maps address -> the byte that command optimistically set.
+        An address is cleared **only** if the overlay still holds that command's
+        value; if a *newer* command has since re-set the same address, its
+        overlay is left in place so the latest user intent is never reverted to
+        an older one. After clearing, the following authoritative read is the
+        truth for those bytes.
+        """
+        for address, byte in expected.items():
+            if self._pending.get(address) == byte:
+                self._pending.pop(address, None)
+
+    def _apply_pending(self) -> None:
+        """Overlay the pending optimistic bytes onto the cached settings block."""
+        for address, byte in self._pending.items():
+            if address < len(self.snapshot.settings):
+                self.snapshot.settings[address] = byte
 
     # -- continuity: interpolate live temps toward setpoint ---------------
 

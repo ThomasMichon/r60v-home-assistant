@@ -114,3 +114,39 @@ def test_broker_push_only_streams_raw_state_and_polls_only_with_a_subscriber():
             await emu.stop()
 
     asyncio.run(scenario())
+
+
+def test_push_server_dispatches_inbound_command_frames():
+    """An inbound `command` frame is parsed and handed to on_command; a
+    malformed inbound frame is ignored and never breaks the read loop."""
+    async def scenario():
+        seen: list = []
+
+        async def on_command(frame):
+            seen.append(frame)
+
+        srv = WsPushServer(host="127.0.0.1", port=0, on_command=on_command)
+        await srv.start()
+        try:
+            port = srv.bound_port
+            async with connect(f"ws://127.0.0.1:{port}") as c:
+                await asyncio.wait_for(c.recv(), 5)  # initial snapshot
+                await c.send(json.dumps(
+                    {"type": "command", "address": 2, "data": [110], "key": "brew_boiler"}
+                ))
+                await c.send("not json at all")            # ignored
+                await c.send(json.dumps({"type": "hello"}))  # wrong type, ignored
+                await c.send(json.dumps(
+                    {"type": "command", "address": 5, "data": [1]}
+                ))
+                for _ in range(100):
+                    if len(seen) >= 2:
+                        break
+                    await asyncio.sleep(0.01)
+            assert len(seen) == 2
+            assert seen[0]["address"] == 2 and seen[0]["data"] == [110]
+            assert seen[1]["address"] == 5
+        finally:
+            await srv.stop()
+
+    asyncio.run(scenario())

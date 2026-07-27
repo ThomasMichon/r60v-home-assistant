@@ -38,6 +38,15 @@ from .wedge import WedgeRecovery
 
 LOGGER = logging.getLogger("r60v.broker")
 
+#: How many times to re-attempt a *transient* write failure at the bridge edge
+#: before giving up (absorbing a miss so it never reaches the user).
+WRITE_RETRIES = 2
+#: Backoff between write retries (seconds).
+WRITE_RETRY_BACKOFF = 0.5
+#: Bound the write-intent queue so a runaway automation can't grow it without
+#: limit; excess intents are dropped (and logged) rather than buffered forever.
+INTENT_QUEUE_MAX = 32
+
 
 class Broker:
     """Wires the device governor to the MQTT state publisher."""
@@ -56,7 +65,11 @@ class Broker:
         # subscribers (a local_push HA integration). Fed by the poll loop; never
         # touches the device.
         self.push: WsPushServer | None = (
-            WsPushServer(self.config.push_host, self.config.push_port)
+            WsPushServer(
+                self.config.push_host,
+                self.config.push_port,
+                on_command=self._on_ws_command,
+            )
             if self.config.push_enabled
             else None
         )
@@ -83,6 +96,11 @@ class Broker:
         )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._commands: asyncio.Queue[tuple[str, str]] | None = None
+        # Write-intents from the WS command channel (address, data), drained by
+        # a single consumer so writes serialize and reconcile in order. Bounded
+        # so a runaway producer can't grow it without limit. Created in run()
+        # (in-loop) so it binds to the running event loop, not a throwaway one.
+        self._intents: asyncio.Queue[tuple[int, list[int]]] | None = None
 
     # -- command marshalling (paho thread -> asyncio loop) ----------------
 
@@ -95,6 +113,7 @@ class Broker:
     async def run(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._commands = asyncio.Queue()
+        self._intents = asyncio.Queue(maxsize=INTENT_QUEUE_MAX)
 
         if self.config.mqtt_enabled:
             self.mqtt.connect()
@@ -123,6 +142,14 @@ class Broker:
         if self.push is not None:
             tasks.append(
                 asyncio.create_task(self.push.serve_forever(), name="r60v-push")
+            )
+            # The write-intent consumer: turns WS command frames into governed,
+            # optimistic-then-reconciled writes. Only meaningful with the push
+            # channel (its transport), so it rides the same enablement.
+            tasks.append(
+                asyncio.create_task(
+                    self._write_intent_loop(), name="r60v-intents"
+                )
             )
         if self.frontend is not None:
             tasks.append(
@@ -302,6 +329,103 @@ class Broker:
         except R60VConnectionError as exc:
             LOGGER.warning("failed to apply command %s: %s", key, exc)
             self.store.note_failure()
+
+    # -- write-intent channel (WS command frames) -------------------------
+
+    async def _on_ws_command(self, frame: dict) -> None:
+        """Handle one inbound WS ``command`` frame: reflect + enqueue.
+
+        Validates the frame, enqueues the write-intent (admission first, so a
+        broadcast hiccup can never leave optimism applied with no write queued),
+        then optimistically reflects it in the store and broadcasts -- so HA sees
+        the intended value at once. The governed write + reconcile happen in
+        ``_write_intent_loop``.
+        """
+        address = frame.get("address")
+        data = frame.get("data")
+        if not isinstance(address, int) or not isinstance(data, list) or not data:
+            LOGGER.warning("ignoring malformed command frame: %r", frame)
+            return
+        if any(not isinstance(b, int) or b < 0 or b > 0xFF for b in data):
+            LOGGER.warning("ignoring command frame with out-of-range bytes: %r", frame)
+            return
+        if self._intents is None:
+            return
+        try:
+            self._intents.put_nowait((address, list(data)))
+        except asyncio.QueueFull:
+            LOGGER.warning("write-intent queue full; dropping command %r", frame)
+            return
+        self.store.apply_optimistic(address, data)
+        if self.push is not None:
+            await self.push.broadcast(self.store.raw_snapshot())
+
+    async def _write_intent_loop(self) -> None:
+        """Drain write-intents, applying each as a governed, reconciled write."""
+        assert self._intents is not None
+        while True:
+            address, data = await self._intents.get()
+            try:
+                await self._write_and_reconcile(address, data)
+            except Exception:  # noqa: BLE001 -- one bad intent must not kill the loop
+                LOGGER.exception("unexpected error applying write-intent; continuing")
+            finally:
+                self._intents.task_done()
+
+    async def _write_and_reconcile(self, address: int, data: list[int]) -> None:
+        """Write one intent to the machine (edge-retried) and reconcile the store.
+
+        Waits out any wedge cooldown first (a command must not reconnect during
+        the machine's required rest). A transient write failure is retried a
+        bounded number of times and, if still failing, absorbed here -- never
+        surfaced to the user. The command's optimistic overlay is then cleared
+        and an authoritative settings read reconciles the store (a failed write
+        self-heals to the machine's real value), followed by a final broadcast.
+        """
+        # Wait out any wedge cooldown -- a command must not reconnect during the
+        # machine's required rest. The cooldown is time-based state owned by the
+        # poll loop's WedgeRecovery clock (not an event we can await), so we poll
+        # it, sleeping the remaining window (bounded, cancellable) each time.
+        while self.wedge.in_cooldown:  # noqa: ASYNC110 -- polling poll-loop-owned wedge clock
+            await asyncio.sleep(min(self.wedge.cooldown_remaining + 0.05, 5.0))
+
+        addresses = [address + offset for offset in range(len(data))]
+        wrote = False
+        for attempt in range(WRITE_RETRIES + 1):
+            try:
+                await self.governor.write(address, data)
+                wrote = True
+                break
+            except R60VConnectionError as exc:
+                if attempt < WRITE_RETRIES:
+                    LOGGER.debug(
+                        "write to 0x%02X failed (%d/%d); retrying: %s",
+                        address, attempt + 1, WRITE_RETRIES, exc,
+                    )
+                    await asyncio.sleep(WRITE_RETRY_BACKOFF)
+                    continue
+                LOGGER.warning(
+                    "write to 0x%02X failed after %d tries; absorbing: %s",
+                    address, WRITE_RETRIES + 1, exc,
+                )
+
+        # This command's optimism is spent -- clear ONLY the overlay bytes this
+        # command set, and only if a newer command to the same address hasn't
+        # superseded them (so the latest user intent is never yanked back to an
+        # older one). The reconcile read below is now the truth for the rest.
+        self.store.reconcile_clear({addr: byte for addr, byte in zip(addresses, data)})
+        if not wrote:
+            self.store.note_failure()
+        try:
+            self.store.update_settings(
+                await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
+            )
+            self.store.note_success()
+        except R60VConnectionError as exc:
+            LOGGER.warning("reconcile read after write failed: %s", exc)
+            self.store.note_failure()
+        if self.push is not None:
+            await self.push.broadcast(self.store.raw_snapshot())
 
 
 def main(argv: list[str] | None = None) -> None:

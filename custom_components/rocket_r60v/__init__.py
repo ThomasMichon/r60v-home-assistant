@@ -104,6 +104,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool
     push_client: R60VPushClient | None = None
     if push_url:
         push_client = R60VPushClient(hass, coordinator, push_url)
+        # Give the coordinator the command channel so writes route as
+        # store-reconciled intents instead of synchronous machine writes.
+        coordinator.attach_push_client(push_client)
         push_client.start()
 
     entry.runtime_data = R60VRuntimeData(

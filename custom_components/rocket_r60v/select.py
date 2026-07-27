@@ -44,5 +44,4 @@ class R60VSelect(R60VEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         address, data = self._desc.encode(option)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)

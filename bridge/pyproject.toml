@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rocket-r60v-bridge"
-version = "1.2.0"
+version = "1.3.0"
 description = "Rocket R60V protocol codec, wire-level emulator, and connection-governing bridge"
 readme = "README.md"
 requires-python = ">=3.9"

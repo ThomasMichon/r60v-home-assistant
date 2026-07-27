@@ -88,6 +88,11 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         self.bridge_health_url = bridge_health_url
         self._health_fetcher = health_fetcher
         self._bridge: BridgeHealth | None = None
+        # Push-mode command channel (optional): set by __init__ once the push
+        # client exists, so writes can be submitted as store-reconciled intents
+        # instead of synchronous machine writes. Duck-typed to avoid an import
+        # cycle with push_client.
+        self._push_client = None
 
     # -- bridge-health back-channel --------------------------------------
 
@@ -204,6 +209,41 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
             if self.client.connected:
                 await self.client.close()
             return False
+
+    # -- write path -------------------------------------------------------
+
+    def attach_push_client(self, push_client) -> None:
+        """Wire the push command channel (called once the push client exists)."""
+        self._push_client = push_client
+
+    async def async_write(self, address: int, data: list[int], *, key: str | None = None) -> None:
+        """Submit a write, choosing the store-arbiter path in push mode.
+
+        In **push mode** the write is a *write-intent* sent over the bridge's
+        command channel: the bridge applies it optimistically to its store,
+        broadcasts it (so HA reflects it at once), performs the governed write
+        with edge retry, and reconciles on the next authoritative read. We do
+        **not** trigger a coordinator refresh -- the pushed snapshot is the
+        confirmation, so a machine-read error can never reach this coordinator's
+        management logic through the command path. If the stream is momentarily
+        down, fall back to the governed front-end write (idempotent) without a
+        refresh; the next poll/push reconciles.
+
+        In **polling mode** the behaviour is unchanged: write directly, then
+        refresh so the entities reflect the machine's actual new state.
+        """
+        if self.push_enabled and self._push_client is not None:
+            try:
+                await self._push_client.async_send_command(address, data, key=key)
+                return
+            except R60VConnectionError as exc:
+                LOGGER.debug(
+                    "push command channel unavailable (%s); front-end fallback", exc
+                )
+                await self.client.write(address, data)
+                return
+        await self.client.write(address, data)
+        await self.async_request_refresh()
 
     # -- polling ----------------------------------------------------------
 

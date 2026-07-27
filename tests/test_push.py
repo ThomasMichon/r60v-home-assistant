@@ -89,3 +89,94 @@ def test_push_client_ignores_malformed_frames(hass: HomeAssistant) -> None:
     pc._handle(json.dumps({"type": "state", "available": True}))  # no settings
     pc._handle(json.dumps({"type": "state", "available": True, "settings": "nope"}))
     assert coord.data is None
+
+
+# -- write-intent command channel ----------------------------------------
+
+
+class _RecordingClient(_FakeClient):
+    """A fake client that records direct writes (the fallback / polling path)."""
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[int, list[int]]] = []
+
+    async def write(self, address: int, data) -> None:
+        self.writes.append((address, list(data)))
+
+
+class _FakeWs:
+    def __init__(self, *, closed: bool = False) -> None:
+        self.closed = closed
+        self.sent: list[dict] = []
+
+    async def send_json(self, frame: dict) -> None:
+        self.sent.append(frame)
+
+
+def _coordinator_with_recording_client(hass, *, push_enabled=True):
+    coord = R60VCoordinator(hass, _RecordingClient(), push_enabled=push_enabled)
+    calls = {"refresh": 0}
+
+    async def _count_refresh() -> None:
+        calls["refresh"] += 1
+
+    coord.async_request_refresh = _count_refresh  # type: ignore[method-assign]
+    return coord, calls
+
+
+async def test_async_send_command_sends_frame(hass: HomeAssistant) -> None:
+    coord = _make_coordinator(hass)
+    pc = _push_client(hass, coord)
+    pc._ws = _FakeWs()
+    await pc.async_send_command(Address.BREW_BOILER_TEMP, [110], key="brew_boiler")
+    assert pc._ws.sent == [
+        {"type": "command", "address": Address.BREW_BOILER_TEMP,
+         "data": [110], "key": "brew_boiler"}
+    ]
+
+
+async def test_async_send_command_raises_when_not_connected(hass: HomeAssistant) -> None:
+    from custom_components.rocket_r60v.client import R60VConnectionError
+
+    coord = _make_coordinator(hass)
+    pc = _push_client(hass, coord)
+    pc._ws = None
+    try:
+        await pc.async_send_command(1, [1])
+        raised = False
+    except R60VConnectionError:
+        raised = True
+    assert raised
+
+
+async def test_async_write_push_mode_uses_command_channel(hass: HomeAssistant) -> None:
+    coord, calls = _coordinator_with_recording_client(hass, push_enabled=True)
+    pc = _push_client(hass, coord)
+    pc._ws = _FakeWs()
+    coord.attach_push_client(pc)
+
+    await coord.async_write(Address.BREW_BOILER_TEMP, [110], key="brew_boiler")
+    # Routed over the command channel; NO direct write and NO refresh.
+    assert len(pc._ws.sent) == 1
+    assert coord.client.writes == []
+    assert calls["refresh"] == 0
+
+
+async def test_async_write_falls_back_to_front_end_when_stream_down(hass: HomeAssistant) -> None:
+    coord, calls = _coordinator_with_recording_client(hass, push_enabled=True)
+    pc = _push_client(hass, coord)
+    pc._ws = _FakeWs(closed=True)  # stream momentarily down
+    coord.attach_push_client(pc)
+
+    await coord.async_write(Address.BREW_BOILER_TEMP, [110])
+    # Fell back to the governed front-end write WITHOUT a refresh.
+    assert coord.client.writes == [(Address.BREW_BOILER_TEMP, [110])]
+    assert calls["refresh"] == 0
+
+
+async def test_async_write_polling_mode_writes_then_refreshes(hass: HomeAssistant) -> None:
+    coord, calls = _coordinator_with_recording_client(hass, push_enabled=False)
+    # No push client attached -> polling path.
+    await coord.async_write(Address.BREW_BOILER_TEMP, [110])
+    assert coord.client.writes == [(Address.BREW_BOILER_TEMP, [110])]
+    assert calls["refresh"] == 1

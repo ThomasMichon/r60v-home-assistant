@@ -41,5 +41,4 @@ class R60VTime(R60VEntity, TimeEntity):
 
     async def async_set_value(self, value: dt_time) -> None:
         address, data = self._desc.encode(value)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)

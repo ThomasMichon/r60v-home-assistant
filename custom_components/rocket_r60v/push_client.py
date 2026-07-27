@@ -45,6 +45,9 @@ class R60VPushClient:
         self.url = url
         self._task: asyncio.Task | None = None
         self._closing = False
+        # The live WebSocket, when connected -- used to send write-intent
+        # command frames back over the same socket the state stream arrives on.
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
 
     def start(self) -> None:
         """Launch the background subscribe loop."""
@@ -62,6 +65,31 @@ class R60VPushClient:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        self._ws = None
+
+    async def async_send_command(
+        self, address: int, data: list[int], *, key: str | None = None
+    ) -> None:
+        """Send a write-intent command frame over the live push socket.
+
+        Raises :class:`R60VConnectionError` when the stream is not currently
+        connected, so the coordinator can fall back to the governed front-end
+        write instead of bouncing the command to the user.
+        """
+        ws = self._ws
+        if ws is None or ws.closed:
+            raise R60VConnectionError("push command channel not connected")
+        frame: dict = {
+            "type": "command",
+            "address": int(address),
+            "data": [int(b) for b in data],
+        }
+        if key is not None:
+            frame["key"] = key
+        try:
+            await ws.send_json(frame)
+        except (aiohttp.ClientError, ConnectionError, OSError) as exc:
+            raise R60VConnectionError(f"failed to send command: {exc}") from exc
 
     # -- internals --------------------------------------------------------
 
@@ -75,14 +103,18 @@ class R60VPushClient:
                 ) as ws:
                     LOGGER.debug("push stream connected: %s", self.url)
                     backoff = _BACKOFF_START
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            self._handle(msg.data)
-                        elif msg.type in (
-                            aiohttp.WSMsgType.CLOSED,
-                            aiohttp.WSMsgType.ERROR,
-                        ):
-                            break
+                    self._ws = ws
+                    try:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                self._handle(msg.data)
+                            elif msg.type in (
+                                aiohttp.WSMsgType.CLOSED,
+                                aiohttp.WSMsgType.ERROR,
+                            ):
+                                break
+                    finally:
+                        self._ws = None
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
                 LOGGER.debug("push stream error (%s); reconnecting", exc)
             if self._closing:

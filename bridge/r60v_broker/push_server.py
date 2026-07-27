@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Awaitable, Callable
 
 import websockets
 from websockets.asyncio.server import serve
@@ -30,15 +31,34 @@ SCHEMA = 1
 #: stalled subscriber cannot hold up the broadcast (and thus the poll cycle).
 _SEND_TIMEOUT = 1.0
 
+#: An inbound write-intent handler: receives one decoded ``command`` frame.
+CommandHandler = Callable[[dict], Awaitable[None]]
+
 
 class WsPushServer:
-    """Broadcasts decoded R60V state snapshots to WebSocket subscribers."""
+    """Broadcasts decoded R60V state snapshots to WebSocket subscribers.
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8788) -> None:
+    The channel is bidirectional: subscribers receive ``state`` snapshots and may
+    send ``command`` frames (write-intents) back over the same socket, which are
+    handed to an optional async ``on_command`` handler. All device I/O still
+    happens behind the governor -- this server only forwards frames.
+    """
+
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8788,
+        *,
+        on_command: CommandHandler | None = None,
+    ) -> None:
         self.host = host
         self.port = port
+        self.on_command = on_command
         self._clients: set = set()
         self._server = None
+        # Serialize broadcasts so the concurrent poll + command broadcasters
+        # never interleave sends, and each send carries the freshest snapshot.
+        self._broadcast_lock = asyncio.Lock()
         # The most recent wrapped snapshot, sent to a client the moment it
         # connects (so a new subscriber sees state immediately, not on next poll).
         self._latest: dict = self._wrap({"available": False})
@@ -55,17 +75,23 @@ class WsPushServer:
     # -- broadcast --------------------------------------------------------
 
     async def broadcast(self, state: dict) -> None:
-        """Store and send a decoded state snapshot to every connected client."""
-        self._latest = self._wrap(state)
-        if not self._clients:
-            return
-        msg = json.dumps(self._latest)
-        dead: list = []
-        await asyncio.gather(
-            *(self._safe_send(client, msg, dead) for client in list(self._clients))
-        )
-        for client in dead:
-            self._clients.discard(client)
+        """Store and send a decoded state snapshot to every connected client.
+
+        Serialized under a lock and always sends the *freshest* stored snapshot,
+        so the concurrent poll and command broadcasters cannot deliver an older
+        snapshot after a newer one.
+        """
+        async with self._broadcast_lock:
+            self._latest = self._wrap(state)
+            if not self._clients:
+                return
+            msg = json.dumps(self._latest)
+            dead: list = []
+            await asyncio.gather(
+                *(self._safe_send(client, msg, dead) for client in list(self._clients))
+            )
+            for client in dead:
+                self._clients.discard(client)
 
     async def _safe_send(self, client, msg: str, dead: list) -> None:
         try:
@@ -81,9 +107,10 @@ class WsPushServer:
         LOGGER.info("push client connected: %s (total %d)", peer, len(self._clients))
         try:
             await ws.send(json.dumps(self._latest))
-            # We don't expect inbound frames; just hold the connection open.
-            async for _ in ws:
-                pass
+            # Inbound frames are write-intents (command frames); anything else is
+            # ignored. A malformed frame must never break the read loop.
+            async for raw in ws:
+                await self._handle_inbound(raw)
         except websockets.ConnectionClosed:
             pass
         finally:
@@ -91,6 +118,22 @@ class WsPushServer:
             LOGGER.info(
                 "push client disconnected: %s (total %d)", peer, len(self._clients)
             )
+
+    async def _handle_inbound(self, raw) -> None:
+        """Decode one inbound frame and, if it is a command, dispatch it."""
+        if self.on_command is None:
+            return
+        try:
+            frame = json.loads(raw)
+        except (ValueError, TypeError):
+            LOGGER.debug("ignoring non-JSON inbound push frame")
+            return
+        if not isinstance(frame, dict) or frame.get("type") != "command":
+            return
+        try:
+            await self.on_command(frame)
+        except Exception as exc:  # noqa: BLE001 -- a bad command must not drop the client
+            LOGGER.warning("command handler failed for %r: %s", frame, exc)
 
     async def start(self) -> None:
         self._server = await serve(self._handler, self.host, self.port)

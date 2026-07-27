@@ -9,4 +9,4 @@ from .emulator import MachineModel, R60VEmulator
 
 __all__ = ["protocol", "MachineModel", "R60VEmulator"]
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"

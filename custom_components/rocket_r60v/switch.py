@@ -61,8 +61,7 @@ class R60VSwitch(R60VEntity, SwitchEntity):
 
     async def _write(self, value: bool) -> None:
         address, data = self._desc.encode(value)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)
 
 
 class R60VTimerSwitch(R60VEntity, SwitchEntity, RestoreEntity):
@@ -130,10 +129,8 @@ class R60VTimerSwitch(R60VEntity, SwitchEntity, RestoreEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         address, data = encode_timer(self._desc.hour_address, self._configured)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         address, data = encode_timer(self._desc.hour_address, None)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)

@@ -231,3 +231,92 @@ def test_broker_wedge_cooldown_lifecycle():
         assert not broker.wedge.in_cooldown and not broker.wedge.awaiting_probe
 
     asyncio.run(scenario())
+
+
+def test_write_intent_optimistic_then_reconciles():
+    """A write-intent reflects optimistically in the store, lands on the machine,
+    and is reconciled by an authoritative settings read."""
+    async def scenario():
+        emu = R60VEmulator(host="127.0.0.1", port=0)
+        await emu.start()
+        broker, _fake = await _make_broker(emu)
+        try:
+            await _poll_once(broker)  # baseline snapshot in the store
+            broker._intents = asyncio.Queue()
+            await broker._on_ws_command(
+                {"type": "command", "address": Address.BREW_BOILER_TEMP,
+                 "data": [110], "key": "brew_boiler"}
+            )
+            # Optimistic apply is immediate (before the governed write runs).
+            assert broker.store.snapshot.settings[Address.BREW_BOILER_TEMP] == 110
+            # Drain the intent through the write+reconcile path.
+            address, data = await broker._intents.get()
+            await broker._write_and_reconcile(address, data)
+            # The machine actually received it, and the store reconciled to truth.
+            assert emu.model.settings[Address.BREW_BOILER_TEMP] == 110
+            assert broker.store.snapshot.settings[Address.BREW_BOILER_TEMP] == 110
+            assert broker.store._pending == {}
+        finally:
+            await broker.governor.stop()
+            await emu.stop()
+
+    asyncio.run(scenario())
+
+
+def test_write_intent_absorbs_transient_write_failure():
+    """A transient write failure is retried at the edge and absorbed -- the call
+    never raises to the user; the store self-heals on the reconcile read."""
+    from r60v_broker.client import R60VConnectionError
+
+    async def scenario():
+        config = Config(machine_host="127.0.0.1", machine_port=1, request_gap=0,
+                        push_enabled=False, frontend_enabled=False)
+        broker = Broker(config)
+        broker.store.update_settings([0] * p.SETTINGS_LEN)
+
+        class FlakyGov:
+            def __init__(self):
+                self.writes = 0
+
+            async def write(self, address, data, **kw):
+                self.writes += 1
+                if self.writes == 1:
+                    raise R60VConnectionError("transient")
+                return None
+
+            async def read(self, address, length, **kw):
+                # Reconcile read reflects the second (successful) write.
+                s = [0] * length
+                s[Address.BREW_BOILER_TEMP] = 110
+                return s
+
+        broker.governor = FlakyGov()
+        broker.store.apply_optimistic(Address.BREW_BOILER_TEMP, [110])
+        # Must not raise, and must retry past the first transient failure.
+        await broker._write_and_reconcile(Address.BREW_BOILER_TEMP, [110])
+        assert broker.governor.writes == 2
+        assert broker.store.snapshot.settings[Address.BREW_BOILER_TEMP] == 110
+        assert broker.store.available is True
+
+    asyncio.run(scenario())
+
+
+def test_write_intent_queue_is_bounded():
+    """A runaway producer cannot grow the intent queue without limit."""
+    from r60v_broker.broker import INTENT_QUEUE_MAX
+
+    async def scenario():
+        config = Config(machine_host="127.0.0.1", machine_port=1, request_gap=0,
+                        push_enabled=True, push_host="127.0.0.1", push_port=0,
+                        frontend_enabled=False)
+        broker = Broker(config)
+        broker._intents = asyncio.Queue(maxsize=INTENT_QUEUE_MAX)
+        broker.store.update_settings([0] * p.SETTINGS_LEN)
+        broker.push = None  # skip broadcast in this unit test
+        for _ in range(INTENT_QUEUE_MAX + 10):
+            await broker._on_ws_command(
+                {"type": "command", "address": Address.BREW_BOILER_TEMP, "data": [110]}
+            )
+        assert broker._intents.qsize() == INTENT_QUEUE_MAX
+
+    asyncio.run(scenario())

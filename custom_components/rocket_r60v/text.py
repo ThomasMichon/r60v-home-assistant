@@ -48,5 +48,4 @@ class R60VText(R60VEntity, TextEntity):
         # encode() raises ValueError on a malformed/out-of-range profile, which
         # HA surfaces to the user without touching the machine.
         address, data = self._desc.encode(value)
-        await self.coordinator.client.write(address, data)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_write(address, data, key=self._desc.key)
