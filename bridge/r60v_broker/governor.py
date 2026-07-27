@@ -57,6 +57,14 @@ class DeviceGovernor:
             self._worker = None
         await self.client.close()
 
+    async def close_link(self) -> None:
+        """Close the upstream connection, freeing the machine's single client
+        slot, **without** stopping the worker. The next submitted job reconnects
+        (the client connects lazily). Used by the wedge-recovery cooldown to let
+        the machine's listener rest. Idempotent -- a no-op when already closed.
+        """
+        await self.client.close()
+
     # -- submission -------------------------------------------------------
 
     async def read(self, address: int, length: int,

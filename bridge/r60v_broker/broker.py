@@ -34,6 +34,7 @@ from .push_server import WsPushServer
 from .state import CLIMATE_BY_KEY, ENTITIES_BY_KEY, LIVE_REGISTERS
 from .store import DeviceState
 from .tcp_frontend import R60VFrontend
+from .wedge import WedgeRecovery
 
 LOGGER = logging.getLogger("r60v.broker")
 
@@ -62,6 +63,9 @@ class Broker:
         # The single arbiter of state + availability. The MQTT projection and
         # the WS push server are both views of THIS store -- neither owns state.
         self.store = DeviceState()
+        # Wedge recovery lives on the bridge now (not the integration): when the
+        # machine's listener wedges, the poll loop backs off and lets it reset.
+        self.wedge = WedgeRecovery()
         # The publisher writes decoded state to the MQTT sink (used only when
         # MQTT is enabled). The WS push server is fed separately, via
         # raw_snapshot(), so enabling both never double-publishes to MQTT.
@@ -172,27 +176,26 @@ class Broker:
             )
             if wants_data:
                 resumed, idle = idle, False
-                try:
-                    if resumed or tick % settings_every == 0:
-                        data = await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
-                        self.store.update_settings(data)
-                    for address, length in LIVE_REGISTERS.items():
-                        self.store.update_live(
-                            address, await self.governor.read(address, length)
+                if self.wedge.in_cooldown:
+                    # Wedged: leave the machine alone so its listener can reset.
+                    # Free its single client slot and keep serving the cached
+                    # (unavailable) state to subscribers.
+                    await self.governor.close_link()
+                elif self.wedge.awaiting_probe:
+                    # The cooldown elapsed -> recover GENTLY with one light read.
+                    if await self._probe_link():
+                        LOGGER.info("R60V answered after cooldown; resuming polling")
+                        self.wedge.record_success()
+                        self.store.note_success()
+                    else:
+                        step = self.wedge.begin_cooldown()
+                        LOGGER.warning(
+                            "R60V still wedged after cooldown; extending back-off "
+                            "to %.0fs", step,
                         )
-                    self.store.note_success()
-                except R60VConnectionError as exc:
-                    # The cache keeps HA continuous; availability drops only after
-                    # the grace period of consecutive failures.
-                    LOGGER.warning("poll cycle failed: %s", exc)
-                    self.store.note_failure()
-                except Exception:  # noqa: BLE001 -- a stray poll error must never kill the loop
-                    # Defence in depth: an unexpected error in one cycle (e.g. a
-                    # malformed frame that slips past the codec) must NOT unwind
-                    # the gather and take the push + front-end servers down with
-                    # it. Log it, count a failure, and keep polling.
-                    LOGGER.exception("unexpected error in poll cycle; continuing")
-                    self.store.note_failure()
+                        await self.governor.close_link()
+                else:
+                    await self._poll_once(resumed or tick % settings_every == 0)
                 # Push consumers get a fresh broadcast tied to the (fast) poll
                 # cadence -- near-real-time, read straight from the store (the
                 # arbiter). MQTT publishing is driven separately by the steady
@@ -204,6 +207,57 @@ class Broker:
                 idle = True
             await asyncio.sleep(interval)
             tick += 1
+
+    async def _poll_once(self, read_settings: bool) -> None:
+        """One normal poll cycle: read into the store, tracking wedge state."""
+        ok = False
+        try:
+            if read_settings:
+                data = await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
+                self.store.update_settings(data)
+            for address, length in LIVE_REGISTERS.items():
+                self.store.update_live(
+                    address, await self.governor.read(address, length)
+                )
+            self.store.note_success()
+            self.wedge.record_success()
+            ok = True
+        except R60VConnectionError as exc:
+            # The cache keeps HA continuous; availability drops only after the
+            # grace period of consecutive failures.
+            LOGGER.warning("poll cycle failed: %s", exc)
+        except Exception:  # noqa: BLE001 -- a stray poll error must never kill the loop
+            # Defence in depth: an unexpected error in one cycle (e.g. a
+            # malformed frame that slips past the codec) must NOT unwind the
+            # gather and take the push + front-end servers down with it.
+            LOGGER.exception("unexpected error in poll cycle; continuing")
+        if not ok:
+            self.store.note_failure()
+            self.wedge.record_failure()
+            if self.wedge.wedged and not self.wedge.in_cooldown:
+                step = self.wedge.begin_cooldown()
+                LOGGER.warning(
+                    "R60V appears wedged (>=%.0fs sustained failure); entering a "
+                    "%.0fs cooldown (closing the connection so its listener can "
+                    "reset)", self.wedge.wedge_after, step,
+                )
+                await self.governor.close_link()
+
+    async def _probe_link(self) -> bool:
+        """Gentle post-cooldown recovery probe: a single settings read.
+
+        The lightest touch that proves the listener greets *and* answers a read.
+        On success it feeds the fresh settings into the store (not wasted); on
+        failure it returns False so the caller extends the back-off, leaving the
+        still-wedged listener its uninterrupted rest. Never raises.
+        """
+        try:
+            data = await self.governor.read(p.SETTINGS_BASE, p.SETTINGS_LEN)
+        except Exception as exc:  # noqa: BLE001 -- a failed probe is expected while wedged
+            LOGGER.debug("post-cooldown probe failed: %s", exc)
+            return False
+        self.store.update_settings(data)
+        return True
 
     # -- publishing (steady cadence, from cache) --------------------------
 

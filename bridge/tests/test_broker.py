@@ -170,3 +170,64 @@ def test_broker_run_propagates_task_crash():
             await asyncio.wait_for(broker.run(), timeout=5)
 
     asyncio.run(scenario())
+
+
+def test_broker_wedge_cooldown_lifecycle():
+    """A sustained wedge makes the poll loop back off (close the link + cooldown),
+    then a gentle probe recovers when the machine answers again -- all on the
+    bridge, so the integration needs none of it."""
+    from r60v_broker.client import R60VConnectionError
+    from r60v_broker.wedge import WedgeRecovery
+    from tests.test_wedge import Clock
+
+    async def scenario():
+        config = Config(machine_host="127.0.0.1", machine_port=1, request_gap=0,
+                        push_enabled=False, frontend_enabled=False)
+        broker = Broker(config)
+
+        class FakeGov:
+            def __init__(self):
+                self.closed = 0
+                self.fail = True
+
+            async def read(self, address, length):
+                if self.fail:
+                    raise R60VConnectionError("wedged")
+                return [0] * length
+
+            async def close_link(self):
+                self.closed += 1
+
+        broker.governor = FakeGov()
+        clk = Clock()
+        broker.wedge = WedgeRecovery(wedge_after=45.0, cooldown_steps=(300.0, 600.0),
+                                     _now=clk)
+
+        # Failures accrue; availability drops after the store's grace, but no
+        # cooldown yet (streak younger than wedge_after).
+        for _ in range(6):
+            await broker._poll_once(False)
+        assert broker.store.available is False
+        assert broker.governor.closed == 0
+        assert not broker.wedge.in_cooldown
+
+        # Cross the wedge window -> next failing poll enters cooldown + frees link.
+        clk.advance(50)
+        await broker._poll_once(False)
+        assert broker.wedge.in_cooldown
+        assert broker.governor.closed == 1
+
+        # Cooldown elapses -> probe still fails -> extend back-off.
+        clk.advance(300)
+        assert broker.wedge.awaiting_probe
+        assert await broker._probe_link() is False
+
+        # Machine recovers: a probe now succeeds -> resume, state cleared.
+        broker.governor.fail = False
+        assert await broker._probe_link() is True
+        broker.wedge.record_success()
+        broker.store.note_success()
+        assert broker.store.available is True
+        assert not broker.wedge.in_cooldown and not broker.wedge.awaiting_probe
+
+    asyncio.run(scenario())
