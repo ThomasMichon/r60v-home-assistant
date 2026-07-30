@@ -216,6 +216,10 @@ class Broker:
                         self.store.note_success()
                     else:
                         step = self.wedge.begin_cooldown()
+                        # A failed post-cooldown probe re-confirms the wedge:
+                        # keep (or re-assert) the store offline so a momentary
+                        # earlier probe success can't leave it reading available.
+                        self.store.note_wedged()
                         LOGGER.warning(
                             "R60V still wedged after cooldown; extending back-off "
                             "to %.0fs", step,
@@ -263,6 +267,12 @@ class Broker:
             self.wedge.record_failure()
             if self.wedge.wedged and not self.wedge.in_cooldown:
                 step = self.wedge.begin_cooldown()
+                # Entering a wedge cooldown is a definitive "machine unreachable"
+                # verdict, and the cooldown now STOPS polling -- so force the
+                # store offline here rather than relying on the grace counter,
+                # which may not have tripped yet if the wedge (time-based) fired
+                # before the grace threshold (count-based) was reached.
+                self.store.note_wedged()
                 LOGGER.warning(
                     "R60V appears wedged (>=%.0fs sustained failure); entering a "
                     "%.0fs cooldown (closing the connection so its listener can "

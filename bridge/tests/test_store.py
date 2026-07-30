@@ -40,6 +40,35 @@ def test_change_events_fire_on_update_and_availability():
     assert store.available is False
 
 
+def test_note_wedged_forces_offline_before_grace_trips():
+    """A wedge cooldown is a definitive unreachable verdict: it must force the
+    store offline even when the grace counter has not yet reached its threshold.
+
+    This is the flapping-prevention over-correction fix -- otherwise, if the
+    (time-based) wedge fires before the (count-based) grace trips and the cooldown
+    then stops polling, the store would freeze at the last-known ``available``
+    verdict and serve stale state for the whole cooldown.
+    """
+    store = DeviceState(availability_grace=4)
+    store.update_settings(_settings())
+    store.note_success()
+    assert store.available is True
+
+    # Only a couple of failures so far -- below the grace threshold, so the
+    # grace counter alone would keep the store "available" (last-known).
+    store.note_failure()
+    store.note_failure()
+    assert store.available is True
+
+    # Entering a wedge cooldown forces offline regardless of the grace count.
+    store.note_wedged()
+    assert store.available is False
+
+    # A subsequent good read brings it back online.
+    store.note_success()
+    assert store.available is True
+
+
 def test_unsubscribe_stops_events():
     store = DeviceState()
     events: list[str] = []

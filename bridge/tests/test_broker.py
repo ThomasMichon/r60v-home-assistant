@@ -233,6 +233,61 @@ def test_broker_wedge_cooldown_lifecycle():
     asyncio.run(scenario())
 
 
+def test_wedge_before_grace_still_marks_offline():
+    """Regression: when the (time-based) wedge fires before the (count-based)
+    availability grace trips, entering the cooldown must still mark the store
+    offline -- otherwise it freezes at last-known ``available`` for the whole
+    cooldown (the "shows last known status while truly unreachable" bug).
+
+    A high grace + a wedge window that elapses within only a couple of failing
+    polls reproduces the race: without the fix, ``store.available`` stays True.
+    """
+    from r60v_broker.client import R60VConnectionError
+    from r60v_broker.wedge import WedgeRecovery
+    from tests.test_wedge import Clock
+
+    async def scenario():
+        config = Config(machine_host="127.0.0.1", machine_port=1, request_gap=0,
+                        push_enabled=False, frontend_enabled=False)
+        broker = Broker(config)
+        # Grace deliberately higher than the number of failing polls before the
+        # wedge fires, so the grace counter alone would NOT drop availability.
+        broker.store.availability_grace = 6
+
+        class DeadGov:
+            def __init__(self):
+                self.closed = 0
+
+            async def read(self, address, length):
+                raise R60VConnectionError("wedged (read timeout)")
+
+            async def close_link(self):
+                self.closed += 1
+
+        broker.governor = DeadGov()
+        clk = Clock()
+        broker.wedge = WedgeRecovery(wedge_after=45.0, cooldown_steps=(300.0,),
+                                     _now=clk)
+
+        # Two failing polls, still inside the wedge window: below grace(6), so
+        # availability is (correctly) still last-known.
+        await broker._poll_once(False)
+        clk.advance(20)
+        await broker._poll_once(False)
+        assert broker.store.available is True
+        assert not broker.wedge.in_cooldown
+
+        # Cross the wedge window on the 3rd failing poll (streak=3 < grace=6):
+        # the cooldown is entered AND the store is forced offline.
+        clk.advance(30)  # t=50 >= wedge_after=45
+        await broker._poll_once(False)
+        assert broker.wedge.in_cooldown
+        assert broker.store.available is False  # <-- the fix
+        assert broker.governor.closed == 1
+
+    asyncio.run(scenario())
+
+
 def test_write_intent_optimistic_then_reconciles():
     """A write-intent reflects optimistically in the store, lands on the machine,
     and is reconciled by an authoritative settings read."""

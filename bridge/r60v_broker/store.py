@@ -127,6 +127,26 @@ class DeviceState:
         if self._fail_streak >= self.availability_grace:
             self._set_available(False)
 
+    def note_wedged(self) -> None:
+        """Force the machine offline on a definitive *unreachable* verdict.
+
+        Called by the bridge when it enters a **wedge cooldown**: a wedge is a
+        sustained-failure determination that the machine is unreachable, after
+        which the cooldown deliberately **stops polling** -- so ``note_failure``
+        is not called again and the grace counter can no longer advance.
+
+        Availability is otherwise grace-*count*-based while the wedge is
+        *time*-based, so if the wedge trips before the grace threshold is
+        reached (realistic when reads time out and each failed poll cycle runs
+        long), the store would freeze at its last ``available`` verdict and serve
+        stale "last-known" state for the entire multi-minute cooldown. Marking
+        offline here decouples availability from that grace-vs-wedge timing race:
+        **a cooldown always implies unavailable.** A later good read
+        (``note_success``) brings the machine back online.
+        """
+        self._fail_streak = max(self._fail_streak, self.availability_grace)
+        self._set_available(False)
+
     def _set_available(self, online: bool) -> None:
         if self._available is online:
             return
