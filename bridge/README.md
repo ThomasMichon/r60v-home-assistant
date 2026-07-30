@@ -109,3 +109,12 @@ python -m r60v_broker.emulator --host 127.0.0.1 --port 1774 -v   # run the emula
 The emulator speaks the real protocol (`*HELLO*`, hex frames, checksums, the
 115-byte settings block, live registers, strict half-duplex) so the bridge and
 the HA integration can be exercised end to end with no machine.
+
+## See also
+
+- [`../docs/architecture.md`](../docs/architecture.md) — the governor, the store
+  (availability arbiter), wedge recovery, and the northbound faces, in depth.
+- [`../docs/troubleshooting.md`](../docs/troubleshooting.md) — diagnosing a link
+  that won't come up, a wedged machine, or a machine that dropped its AP.
+- [`../docs/protocol.md`](../docs/protocol.md) — the wire protocol reference.
+- [`../docs/README.md`](../docs/README.md) — the documentation suite index.

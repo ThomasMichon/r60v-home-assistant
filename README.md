@@ -53,6 +53,19 @@ and re-create the wedge. **The bridge is the governor.**
   └────────────┘         └───────────────────────────┘          └──────────┘
 ```
 
+## Documentation
+
+Full docs live in [`docs/`](docs/) — start at the [suite index](docs/README.md):
+
+- **[Protocol reference](docs/protocol.md)** — the ASCII-hex wire protocol,
+  address map, and encodings.
+- **[Architecture](docs/architecture.md)** — the governor/consumer design, the
+  availability arbiter, wedge recovery, and the health taxonomy.
+- **[Troubleshooting](docs/troubleshooting.md)** — diagnose "everything
+  unavailable," tell *off* from *wedged* from *link-down*, and recover.
+- **[Reverse-engineering](docs/reverse-engineering.md)** — how the protocol was
+  derived, and how to reproduce or extend it.
+
 ## Requirements
 
 - A **Rocket R60V** with the Wi-Fi module (the `RocketEspresso` AP).
@@ -168,7 +181,7 @@ Auto-On / Auto-Off switches on and set the times with the time pickers).
 |------|------|
 | [`custom_components/rocket_r60v/`](custom_components/rocket_r60v/) | The Home Assistant custom integration. |
 | [`bridge/`](bridge/) | The bridge daemon: protocol codec, governor, front-end, MQTT, and a wire-level emulator. |
-| [`docs/protocol.md`](docs/protocol.md) | Reverse-engineered R60V control-protocol reference. |
+| [`docs/`](docs/) | Documentation suite — [protocol reference](docs/protocol.md), [architecture](docs/architecture.md), [troubleshooting](docs/troubleshooting.md), and [reverse-engineering](docs/reverse-engineering.md). Start at [`docs/README.md`](docs/README.md). |
 
 ## Prior art & credits
 
