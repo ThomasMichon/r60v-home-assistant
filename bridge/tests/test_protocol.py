@@ -68,7 +68,6 @@ def test_decode_data_rejects_non_hex_as_protocol_error():
 def test_parse_frame_wraps_garbled_payload():
     # A frame whose envelope parses but whose payload is non-hex must raise
     # ProtocolError, not ValueError, so client.request()'s retry path handles it.
-    garbled = "r000100016942"  # read reply, non-hex payload "rB"-style bytes
     envelope_ok = "r00010001"
     payload = "gg"  # non-hex
     raw = envelope_ok + payload + p.checksum(envelope_ok + payload)
