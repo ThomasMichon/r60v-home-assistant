@@ -184,9 +184,16 @@ async def test_cooldown_backoff_lengthens(hass: HomeAssistant) -> None:
 
 
 async def test_cooldown_recovers_gently_after_expiry(hass: HomeAssistant) -> None:
-    """When the cooldown elapses and the machine answers a gentle probe, the
-    coordinator resumes polling (health-gated auto-recovery) -- no operator
-    override needed."""
+    """When the cooldown elapses, recovery is GRADED: a single good probe does
+    not resume (it only confirms) -- only a run of RESUME_AFTER_PROBES consecutive
+    good probes resumes full polling, so a lone lucky read from a still-marginal
+    listener cannot resume cadence and immediately re-wedge. No operator override
+    needed."""
+    from custom_components.rocket_r60v.coordinator import (
+        RESUME_AFTER_PROBES,
+        UpdateFailed,
+    )
+
     coord = _make_coordinator(hass)
     coord.data = StateSnapshot()
     coord._consecutive_failures = FAILURE_TOLERANCE + 1
@@ -202,12 +209,62 @@ async def test_cooldown_recovers_gently_after_expiry(hass: HomeAssistant) -> Non
     coord._read_snapshot = read_snapshot_ok  # type: ignore[method-assign]
     coord.client.read_ok = True  # the gentle probe now succeeds (machine back)
 
+    # Each probe before the last confirms but does NOT resume (no full read yet).
+    for i in range(1, RESUME_AFTER_PROBES):
+        with pytest.raises(UpdateFailed):
+            await coord._async_update_data()
+        assert coord._probe_successes == i
+        assert coord._cooldown_index > 0  # not yet cleared
+
+    # The confirming run completes -> a normal full read, all state cleared.
     result = await coord._async_update_data()
     assert result is good
     assert not coord.in_cooldown
     assert coord._cooldown_index == 0
     assert coord._consecutive_failures == 0
+    assert coord._probe_successes == 0
     assert coord.connection_state != "cooldown"
+
+
+async def test_confirming_probe_failure_resets_and_extends(hass: HomeAssistant) -> None:
+    """A good probe that starts a confirm run, followed by a failed probe, must
+    discard the partial run and extend the backoff -- never a premature resume."""
+    from custom_components.rocket_r60v.coordinator import (
+        RESUME_AFTER_PROBES,
+        UpdateFailed,
+    )
+
+    if RESUME_AFTER_PROBES < 2:
+        pytest.skip("graded resume requires >=2 probes to exercise the reset")
+
+    coord = _make_coordinator(hass)
+    coord.data = StateSnapshot()
+    coord._consecutive_failures = FAILURE_TOLERANCE + 1
+    coord._enter_cooldown()
+    idx_after_first = coord._cooldown_index
+    coord._cooldown_until = None  # elapse
+
+    good = StateSnapshot()
+
+    async def read_snapshot_ok() -> StateSnapshot:
+        return good
+
+    coord._read_snapshot = read_snapshot_ok  # type: ignore[method-assign]
+
+    # One good probe -> confirming (not resumed).
+    coord.client.read_ok = True
+    with pytest.raises(UpdateFailed):
+        await coord._async_update_data()
+    assert coord._probe_successes == 1
+
+    # Then a failed probe -> re-cool, confirm progress wiped, backoff escalated.
+    coord._cooldown_until = None  # elapse again
+    coord.client.read_ok = False
+    with pytest.raises(UpdateFailed):
+        await coord._async_update_data()
+    assert coord._probe_successes == 0
+    assert coord._cooldown_index == idx_after_first + 1
+    assert coord.in_cooldown
 
 
 async def test_cooldown_extends_gently_when_still_wedged(hass: HomeAssistant) -> None:

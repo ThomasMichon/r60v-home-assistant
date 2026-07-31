@@ -209,11 +209,24 @@ class Broker:
                     # (unavailable) state to subscribers.
                     await self.governor.close_link()
                 elif self.wedge.awaiting_probe:
-                    # The cooldown elapsed -> recover GENTLY with one light read.
+                    # The cooldown elapsed -> recover GENTLY with one light read,
+                    # and resume full polling only after a run of consecutive good
+                    # probes confirms the listener is genuinely back (a single
+                    # lucky read from a still-marginal listener must not resume
+                    # cadence and immediately re-wedge).
                     if await self._probe_link():
-                        LOGGER.info("R60V answered after cooldown; resuming polling")
-                        self.wedge.record_success()
-                        self.store.note_success()
+                        if self.wedge.record_probe_success():
+                            LOGGER.info(
+                                "R60V answered after cooldown; resuming polling"
+                            )
+                            self.store.note_success()
+                        else:
+                            LOGGER.info(
+                                "R60V post-cooldown probe %d/%d succeeded; "
+                                "confirming recovery before resuming",
+                                self.wedge.probe_successes,
+                                self.wedge.resume_after_probes,
+                            )
                     else:
                         step = self.wedge.begin_cooldown()
                         # A failed post-cooldown probe re-confirms the wedge:

@@ -88,3 +88,67 @@ def test_cooldown_remaining_counts_down():
     assert w.cooldown_remaining == 300.0
     clk.advance(120)
     assert w.cooldown_remaining == 180.0
+
+
+# -- graded resume: require a run of consecutive good probes --------------
+
+
+def _elapse_to_probe(clk: "Clock", w: WedgeRecovery, step: float) -> None:
+    """Drive a fresh wedge into the probe-due state after ``step`` seconds."""
+    w.record_failure()
+    clk.advance(50)
+    assert w.begin_cooldown() == step
+    clk.advance(step)
+    assert w.awaiting_probe and not w.in_cooldown
+
+
+def test_graded_resume_requires_consecutive_probes():
+    clk = Clock()
+    w = WedgeRecovery(
+        wedge_after=45.0, cooldown_steps=(300.0,), resume_after_probes=2, _now=clk
+    )
+    _elapse_to_probe(clk, w, 300.0)
+    # First good probe: confirming, NOT yet resumed -- keep probing.
+    assert w.record_probe_success() is False
+    assert w.probe_successes == 1
+    clk.advance(1)
+    assert w.awaiting_probe and not w.in_cooldown  # still probe-due, not polling
+    # Second consecutive good probe: fully resumed, all state cleared.
+    assert w.record_probe_success() is True
+    assert not w.awaiting_probe and not w.in_cooldown and not w.wedged
+    assert w.probe_successes == 0
+
+
+def test_failed_probe_discards_confirm_progress():
+    clk = Clock()
+    w = WedgeRecovery(
+        wedge_after=45.0, cooldown_steps=(300.0, 600.0), resume_after_probes=3, _now=clk
+    )
+    _elapse_to_probe(clk, w, 300.0)
+    assert w.record_probe_success() is False
+    assert w.probe_successes == 1
+    # A failed probe re-cools (next backoff step) and wipes the partial run.
+    clk.advance(1)
+    assert w.begin_cooldown() == 600.0
+    assert w.probe_successes == 0
+    clk.advance(600)
+    # The confirm run must start from zero again after the fresh cooldown.
+    assert w.record_probe_success() is False
+    assert w.probe_successes == 1
+
+
+def test_resume_after_single_probe_is_backwards_compatible():
+    clk = Clock()
+    w = WedgeRecovery(
+        wedge_after=45.0, cooldown_steps=(300.0,), resume_after_probes=1, _now=clk
+    )
+    _elapse_to_probe(clk, w, 300.0)
+    # With N=1 a single good probe resumes immediately (the pre-graded behaviour).
+    assert w.record_probe_success() is True
+    assert not w.awaiting_probe and not w.in_cooldown
+
+
+def test_default_resume_after_probes_is_graded():
+    # A bare WedgeRecovery uses the module default, which must be > 1 so a single
+    # lucky read cannot resume full polling.
+    assert WedgeRecovery().resume_after_probes >= 2

@@ -36,12 +36,26 @@ FAILURE_TOLERANCE = 5
 #: (freeing the machine's single client slot) and stop polling for a spell,
 #: lengthening the wait on each repeat. Range matches the observed 5-30 min
 #: recovery window.
+#:
+#: **Ownership.** The bridge (``r60v_broker.wedge``) is the *designated single
+#: owner* of the wedge cooldown discipline. This coordinator carries a mirror of
+#: that schedule for **bridge-less polling mode** only -- when a bridge is present
+#: (push mode) ``_async_update_data`` runs no cooldown logic and the integration
+#: consumes the bridge's availability verdict instead. ``COOLDOWN_STEPS`` and
+#: ``RESUME_AFTER_PROBES`` are pinned to the bridge's canonical values by
+#: ``tests/test_cooldown_parity.py`` so the two mirrors cannot drift as one side
+#: is tuned.
 COOLDOWN_STEPS: tuple[timedelta, ...] = (
     timedelta(minutes=5),
     timedelta(minutes=10),
     timedelta(minutes=20),
     timedelta(minutes=30),
 )
+
+#: Consecutive successful post-cooldown probes required before resuming full
+#: polling. Mirrors ``r60v_broker.wedge.RESUME_AFTER_PROBES``: a single lucky
+#: read from a still-marginal listener must not resume cadence and re-wedge.
+RESUME_AFTER_PROBES = 2
 
 # Connection-state vocabulary (surfaced by the Connection sensor).
 STATE_CONNECTED = "connected"
@@ -88,6 +102,7 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         self._consecutive_failures = 0
         self._cooldown_until: datetime | None = None
         self._cooldown_index = 0
+        self._probe_successes = 0
         # Bridge-health back-channel (optional).
         self.bridge_health_url = bridge_health_url
         self._health_fetcher = health_fetcher
@@ -197,6 +212,9 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         step = COOLDOWN_STEPS[min(self._cooldown_index, len(COOLDOWN_STEPS) - 1)]
         self._cooldown_until = dt_util.utcnow() + step
         self._cooldown_index += 1
+        # A fresh cooldown discards any partial confirm progress: the machine
+        # must earn a clean run of good probes again before polling resumes.
+        self._probe_successes = 0
         LOGGER.warning(
             "R60V appears wedged (%d consecutive failures); entering a %s cooldown "
             "(closing the connection so its listener can reset)",
@@ -215,6 +233,7 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         self._cooldown_until = None
         self._cooldown_index = 0
         self._consecutive_failures = 0
+        self._probe_successes = 0
 
     async def _probe_healthy(self) -> bool:
         """Gentle control-path health probe used to exit a cooldown.
@@ -340,13 +359,31 @@ class R60VCoordinator(DataUpdateCoordinator[StateSnapshot]):
         # listener is not slammed straight back into a longer cooldown, and so a
         # failed recovery re-escalates on a *light* touch instead of a full poll
         # (the old behaviour, which could itself re-wedge the machine). This is
-        # the health-gated auto-recovery: the instant the machine answers again
-        # we resume; while it stays wedged we keep backing off.
+        # the health-gated auto-recovery: only after a run of consecutive good
+        # probes (RESUME_AFTER_PROBES) do we trust the machine and resume full
+        # polling -- a single lucky read from a still-marginal listener must not
+        # resume cadence and immediately re-wedge. While it stays wedged we keep
+        # backing off.
         if self._cooldown_index > 0:
             if await self._probe_healthy():
-                LOGGER.info("R60V answered after cooldown; resuming polling")
-                self._clear_cooldown()
-                # fall through to a normal full read
+                self._probe_successes += 1
+                if self._probe_successes >= RESUME_AFTER_PROBES:
+                    LOGGER.info("R60V answered after cooldown; resuming polling")
+                    self._clear_cooldown()
+                    # fall through to a normal full read
+                else:
+                    # Confirming recovery: keep probing gently at the poll
+                    # interval, staying out of a full read until the machine has
+                    # answered a clean run of consecutive probes.
+                    LOGGER.info(
+                        "R60V post-cooldown probe %d/%d succeeded; confirming "
+                        "recovery before resuming",
+                        self._probe_successes, RESUME_AFTER_PROBES,
+                    )
+                    raise UpdateFailed(
+                        f"confirming recovery "
+                        f"({self._probe_successes}/{RESUME_AFTER_PROBES} probes)"
+                    )
             else:
                 await self.client.close()
                 self._enter_cooldown()  # still wedged -> extend the backoff
