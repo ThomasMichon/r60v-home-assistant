@@ -375,3 +375,70 @@ def test_write_intent_queue_is_bounded():
         assert broker._intents.qsize() == INTENT_QUEUE_MAX
 
     asyncio.run(scenario())
+
+
+def test_poll_loop_settings_cadence_not_doubled():
+    """The settings-read cadence honors settings_interval: the cadence counter
+    advances exactly once per active poll cycle.
+
+    Regression guard for a double-increment of `tick` (one inside the
+    wants-data branch, one unconditional after the sleep) that halved the
+    effective settings interval and doubled the fragile device's heavy-read
+    exposure. Over 20 poll cycles at settings_every=4 the settings read must
+    fire at tick 0,4,8,12,16 -> exactly 5 times; the old bug produced ~10.
+    """
+    async def scenario():
+        emu = R60VEmulator(host="127.0.0.1", port=0)
+        await emu.start()
+        broker, _fake = await _make_broker(emu)
+        # A steady data-wanting consumer so the loop never idles.
+        broker.config.mqtt_host = "test-broker"     # -> mqtt_enabled True
+        broker.config.live_interval = 0.25          # interval = 0.25
+        broker.config.settings_interval = 1.0       # settings_every = 4
+
+        # Quiet the emulator dynamics so the poll loop owns asyncio.sleep.
+        if emu._ticker is not None:
+            emu._ticker.cancel()
+
+        settings_reads = 0
+        real_read = broker.governor.read
+
+        async def counting_read(address, length, **kw):
+            nonlocal settings_reads
+            if address == p.SETTINGS_BASE and length == p.SETTINGS_LEN:
+                settings_reads += 1
+            return await real_read(address, length, **kw)
+
+        broker.governor.read = counting_read  # type: ignore[assignment]
+
+        CYCLES = 20
+        cycles = 0
+        real_sleep = asyncio.sleep
+
+        class _Stop(Exception):
+            pass
+
+        async def fake_sleep(delay):
+            # Only the poll loop sleeps for `interval`; count those cycles and
+            # stop after CYCLES. Delegate any other sleep to the real one.
+            nonlocal cycles
+            if delay == broker.config.live_interval:
+                cycles += 1
+                if cycles >= CYCLES:
+                    raise _Stop
+                return
+            await real_sleep(delay)
+
+        asyncio.sleep = fake_sleep  # type: ignore[assignment]
+        try:
+            await broker._poll_loop()
+        except _Stop:
+            pass
+        finally:
+            asyncio.sleep = real_sleep  # type: ignore[assignment]
+            await broker.governor.stop()
+            await emu.stop()
+
+        assert settings_reads == 5
+
+    asyncio.run(scenario())

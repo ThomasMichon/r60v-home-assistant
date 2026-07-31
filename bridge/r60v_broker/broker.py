@@ -233,11 +233,14 @@ class Broker:
                 # publish loop.
                 if self.push is not None:
                     await self.push.broadcast(self.store.raw_snapshot())
+                # Advance the cadence counter exactly once per active poll cycle:
+                # it gates the heavier settings read (tick % settings_every). A
+                # second increment here would halve the settings interval and
+                # double the fragile device's exposure.
                 tick += 1
             else:
                 idle = True
             await asyncio.sleep(interval)
-            tick += 1
 
     async def _poll_once(self, read_settings: bool) -> None:
         """One normal poll cycle: read into the store, tracking wedge state."""
