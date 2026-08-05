@@ -23,6 +23,7 @@ from .const import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     DOMAIN,
+    clock_sync_enabled,
 )
 from .coordinator import R60VCoordinator
 from .push_client import R60VPushClient
@@ -123,8 +124,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: R60VConfigEntry) -> bool
         client=client, coordinator=coordinator, push_client=push_client
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    # Keep the machine's onboard clock (and its built-in timers) on local time.
-    entry.runtime_data.clock_unsub = async_setup_clock_sync(hass, client)
+    # Keep the machine's onboard clock (and its built-in timers) on local time --
+    # unless auto-clock-sync is disabled, in which case the integration never
+    # writes the clock on its own (leaving the control link untouched except on
+    # explicit user action).
+    if clock_sync_enabled(entry.options, entry.data):
+        entry.runtime_data.clock_unsub = async_setup_clock_sync(hass, client)
     # In push mode the coordinator doesn't poll on an interval, so refresh the
     # bridge-health diagnostics on a light timer to keep them live.
     if push_url and coordinator.bridge_health_enabled:

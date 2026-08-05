@@ -53,3 +53,29 @@ def default_push_url(host: str, port: int = DEFAULT_PUSH_PORT) -> str:
     The push server runs on the same bridge host as the control front-end.
     """
     return f"ws://{host}:{port}"
+
+
+# Optional automatic clock sync.
+#
+# The integration keeps the machine's onboard clock (and its built-in Auto-On /
+# Auto-Off timers) on Home Assistant's local time by writing the date/time to the
+# machine once at setup and again daily. Every such write touches the machine's
+# fragile control listener. Enabled by default (the long-standing behaviour);
+# disable it to stop the integration writing the clock on its own -- so it never
+# touches the machine except on explicit user action. (Disabling does not change
+# the machine's clock; it only stops the integration from pushing it.)
+CONF_CLOCK_SYNC = "clock_sync"
+DEFAULT_CLOCK_SYNC = True
+
+
+def clock_sync_enabled(options: dict, data: dict) -> bool:
+    """Resolve the effective auto-clock-sync setting (options override data).
+
+    A plain ``options.get(...) or data.get(...)`` cannot be used for a boolean
+    (an explicit ``False`` would fall through to the default), so check each
+    source for the key's *presence* before falling back to the default.
+    """
+    for source in (options, data):
+        if CONF_CLOCK_SYNC in source:
+            return bool(source[CONF_CLOCK_SYNC])
+    return DEFAULT_CLOCK_SYNC

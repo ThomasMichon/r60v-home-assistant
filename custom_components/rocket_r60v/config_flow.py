@@ -19,10 +19,13 @@ from homeassistant.data_entry_flow import FlowResult
 from .client import R60VClient, R60VConnectionError
 from .const import (
     CONF_BRIDGE_HEALTH_URL,
+    CONF_CLOCK_SYNC,
     CONF_PUSH_URL,
+    DEFAULT_CLOCK_SYNC,
     DEFAULT_HOST,
     DEFAULT_PORT,
     DOMAIN,
+    clock_sync_enabled,
     default_bridge_health_url,
     default_push_url,
 )
@@ -78,6 +81,7 @@ class RocketR60VConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
                 vol.Optional(CONF_PUSH_URL, default=""): str,
                 vol.Optional(CONF_BRIDGE_HEALTH_URL, default=""): str,
+                vol.Optional(CONF_CLOCK_SYNC, default=DEFAULT_CLOCK_SYNC): bool,
             }
         )
         return self.async_show_form(
@@ -107,6 +111,9 @@ class R60VOptionsFlow(config_entries.OptionsFlow):
                     CONF_BRIDGE_HEALTH_URL: (
                         user_input.get(CONF_BRIDGE_HEALTH_URL) or ""
                     ).strip(),
+                    CONF_CLOCK_SYNC: bool(
+                        user_input.get(CONF_CLOCK_SYNC, DEFAULT_CLOCK_SYNC)
+                    ),
                 },
             )
 
@@ -122,10 +129,12 @@ class R60VOptionsFlow(config_entries.OptionsFlow):
             or entry.data.get(CONF_BRIDGE_HEALTH_URL)
             or default_bridge_health_url(host)
         )
+        current_clock_sync = clock_sync_enabled(entry.options, entry.data)
         schema = vol.Schema(
             {
                 vol.Optional(CONF_PUSH_URL, default=current_push): str,
                 vol.Optional(CONF_BRIDGE_HEALTH_URL, default=current_health): str,
+                vol.Optional(CONF_CLOCK_SYNC, default=current_clock_sync): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

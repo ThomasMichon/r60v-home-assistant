@@ -136,6 +136,11 @@ The Brew Boiler's current temperature is read from the machine's front-panel
 text when shown (the raw live register mirrors the setpoint on some units), and
 the integration pushes Home Assistant's local time to the machine's onboard
 clock at startup and once a day so its built-in timers stay correct across DST.
+This automatic clock sync can be turned off — **Configure → Keep the machine's
+clock in sync** (also on the initial setup form) — if you would rather the
+integration never write the clock on its own (leaving the machine's control link
+untouched except on explicit user action). Turning it off does not change the
+machine's clock; it only stops the periodic re-push.
 
 ### Letting Home Assistant own the schedule
 
